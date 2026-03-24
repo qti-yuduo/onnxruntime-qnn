@@ -872,7 +872,10 @@ bool OrtMatMulNodeGroupSelector::Check(const OrtGraph* graph, const OrtApi& ort_
     }
 
     auto dt_output = GetNodeOutputDataType(q_nodes[0], ort_api, 0);
-    return dt_output.has_value() && dt_input.value() == dt_output.value();
+    if (dt_output.has_value() and IsDisallowedType(dt_output.value(), allow_16bit_, allow_4bit_)) {
+      return false;
+    }
+    return true;
   } else {
     // Can be converted to MatMulIntegerToFloat if EP supports that
     return matmulintegertofloat_allowed_;
@@ -883,42 +886,22 @@ bool OrtGemmNodeGroupSelector::Check(const OrtGraph* graph, const OrtApi& ort_ap
                                      const OrtNode* redundant_clip_node,
                                      const std::vector<const OrtNode*>& dq_nodes,
                                      const std::vector<const OrtNode*>& q_nodes) const {
-  if (!CheckQDQNodes(graph, ort_api, node, redundant_clip_node, dq_nodes, q_nodes, -1 /*num_dq_inputs*/,
+  if (!CheckQDQNodes(graph, ort_api, node, redundant_clip_node, dq_nodes, q_nodes,
+                     static_cast<int>(dq_nodes.size()) /*num_dq_inputs*/,
                      true /*is_empty_q_nodes_allowed*/)) {
     return false;
   }
 
-  // Check if we have at least 2 DQ nodes (A and B inputs)
-  if (dq_nodes.size() < 2) {
+  // At least 1 DQ node required (either activation or weight must be quantized) else its not a QDQ node group
+  if (dq_nodes.empty()) {
     return false;
   }
 
-  // Get input data types for A and B
-  auto dt_A = GetNodeInputDataType(dq_nodes[0], ort_api, 0);
-  auto dt_B = GetNodeInputDataType(dq_nodes[1], ort_api, 0);
-
-  if (!dt_A.has_value() || !dt_B.has_value()) {
-    return false;
-  }
-
-  // If A is INT8, B must also be INT8
-  if (dt_A.value() == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8) {
-    if (dt_A.value() != dt_B.value()) {  // if A is signed int, B must be signed int
-      return false;
-    }
-  }
-
-  // If there are Q nodes, check if activation and output have the same type
-  if (!q_nodes.empty()) {
-    auto dt_Y = GetNodeOutputDataType(q_nodes[0], ort_api, 0);
-    if (!dt_Y.has_value() || dt_A.value() != dt_Y.value()) {  // activation and output must be same type
-      return false;
-    }
-  }
-
-  if (IsDisallowedType(dt_A.value(), allow_16bit_, allow_4bit_) ||
-      IsDisallowedType(dt_B.value(), allow_16bit_, allow_4bit_)) {
-    return false;
+  // Validate types for available DQ nodes
+  for (size_t i = 0; i < dq_nodes.size(); ++i) {
+    auto dt = GetNodeInputDataType(dq_nodes[i], ort_api, 0);
+    if (!dt.has_value()) return false;
+    if (IsDisallowedType(dt.value(), allow_16bit_, allow_4bit_)) return false;
   }
 
   // If there's no bias (less than 3 DQ nodes), we're done
@@ -1057,7 +1040,6 @@ bool OrtBatchNormalizationNodeGroupSelector::Check(const OrtGraph* graph, const 
     return false;
   }
 
-  // INT8 is 3 in ONNX_NAMESPACE::TensorProto_DataType
   if (dt_input.value() == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8) {
     if (!int8_allowed_ || dt_scale.value() != dt_input.value()) {
       return false;

@@ -144,6 +144,185 @@ Ort::Status GemmOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper,
     RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(input_tensorwrapper)), "Failed to add tensor.");
   }
 
+  // Insert QNN Convert op when activation input quant type differs from output quant type
+  // HTP FullyConnected requires in[0] and out[0] to have the same quantized data type
+  // E.g., for U8 activation with U16 output, insert Convert(U8->U16) before FullyConnected
+  if (!input_names.empty() && !node_unit.Outputs().empty()) {
+    TensorInfo input_info = {};
+    RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Inputs()[0], input_info));
+    TensorInfo output_info = {};
+    RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Outputs()[0], output_info));
+
+    const bool has_input_quant = node_unit.Inputs()[0].quant_param.has_value();
+    const bool has_output_quant = node_unit.Outputs()[0].quant_param.has_value();
+    const bool has_quant_weights = node_unit.Inputs().size() >= 2 &&
+                                   node_unit.Inputs()[1].quant_param.has_value();
+    const bool is_mixed_precision = input_info.qnn_data_type != output_info.qnn_data_type;
+
+    // Sub-cases of mixed precision
+    const bool is_widening = is_mixed_precision && has_input_quant && has_output_quant &&
+                             utils::GetElementSizeByType(input_info.qnn_data_type) <
+                                 utils::GetElementSizeByType(output_info.qnn_data_type);
+    const bool is_quant_to_float = is_mixed_precision && has_input_quant && !has_output_quant &&
+                                   output_info.qnn_data_type == QNN_DATATYPE_FLOAT_32;
+
+    // FC must run in fp32 mode when activation is dequantized or already fp32 with quant weights
+    const bool needs_fp32_fc = is_quant_to_float ||
+                               (input_info.qnn_data_type == QNN_DATATYPE_FLOAT_32 && has_quant_weights);
+
+    if (is_widening) {
+      RETURN_IF_NOT(input_info.quant_param.IsPerTensor(),
+                    "Mixed-precision Gemm activation input only supports per-tensor quantization");
+      const Qnn_QuantizeParams_t& input_qp = input_info.quant_param.Get();
+      float output_scale = input_qp.scaleOffsetEncoding.scale / 256.0f;
+      int32_t output_offset = input_qp.scaleOffsetEncoding.offset * 256;
+
+      const std::string convert_output_name =
+          utils::UniqueNameGenerator().New(input_names[0], "_convert_to_output_type");
+      QnnTensorWrapper convert_output_tensorwrapper(convert_output_name,
+                                                    QNN_TENSOR_TYPE_NATIVE,
+                                                    output_info.qnn_data_type,
+                                                    QnnQuantParamsWrapper(output_scale, output_offset),
+                                                    std::move(input_info.shape));
+      RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(convert_output_tensorwrapper)),
+                    "Failed to add Convert output tensor");
+      RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
+                        utils::UniqueNameGenerator().New(convert_output_name, QNN_OP_CONVERT),
+                        QNN_OP_PACKAGE_NAME_QTI_AISW,
+                        QNN_OP_CONVERT,
+                        {input_names[0]},
+                        {convert_output_name},
+                        {},
+                        do_op_validation),
+                    "Failed to add Convert node");
+      input_names[0] = convert_output_name;
+
+      // Requantize bias for the new activation scale. The bias was quantized with
+      // bias_scale = activation_scale * weight_scale. After Convert, the activation scale
+      // changed (e.g., /256 for U8->U16), so the bias must be requantized to match
+      if (input_names.size() == 3) {
+        const auto& bias_wrapper = qnn_model_wrapper.GetQnnTensorWrapper(input_names[2]);
+        if (bias_wrapper.GetTensorDataType() == QNN_DATATYPE_SFIXED_POINT_32) {
+          const auto& bias_qp = bias_wrapper.GetQnnQuantParams();
+          const auto& bias_dims = bias_wrapper.GetTensorDims();
+
+          std::vector<float> bias_scales;
+          RETURN_IF_ERROR(bias_qp.GetScales(bias_scales));
+          std::vector<int32_t> bias_offsets(bias_scales.size(), 0);
+
+          TensorInfo weight_info = {};
+          RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Inputs()[1], weight_info));
+          std::vector<float> weight_scales;
+          RETURN_IF_ERROR(weight_info.quant_param.GetScales(weight_scales));
+
+          const Qnn_Tensor_t& qnn_bias = bias_wrapper.GetQnnTensor();
+          const Qnn_ClientBuffer_t& client_buf = GetQnnTensorClientBuf(qnn_bias);
+          std::vector<uint8_t> original_bias_data(
+              static_cast<const uint8_t*>(client_buf.data),
+              static_cast<const uint8_t*>(client_buf.data) + client_buf.dataSize);
+
+          std::vector<uint8_t> requantized_bias_data;
+          std::vector<float> new_bias_scales;
+          std::vector<int32_t> new_bias_offsets;
+          std::optional<int64_t> axis = bias_qp.IsPerChannel()
+                                            ? std::optional<int64_t>(0)
+                                            : std::nullopt;
+
+          RETURN_IF_ERROR(utils::RequantizeBiasTensor(
+              original_bias_data, bias_dims,
+              bias_scales, bias_offsets,
+              weight_scales, output_scale,
+              QNN_DATATYPE_SFIXED_POINT_32,
+              requantized_bias_data, new_bias_scales, new_bias_offsets,
+              axis));
+
+          const std::string new_bias_name =
+              utils::UniqueNameGenerator().New(input_names[2], "_requant");
+          QnnQuantParamsWrapper new_bias_qp;
+          if (bias_qp.IsPerChannel()) {
+            new_bias_qp = QnnQuantParamsWrapper(new_bias_scales, new_bias_offsets,
+                                                /*axis*/ 0, /*is_int4*/ false);
+          } else {
+            new_bias_qp = QnnQuantParamsWrapper(new_bias_scales[0], new_bias_offsets[0]);
+          }
+          QnnTensorWrapper new_bias_wrapper(new_bias_name, QNN_TENSOR_TYPE_STATIC,
+                                            QNN_DATATYPE_SFIXED_POINT_32,
+                                            std::move(new_bias_qp),
+                                            std::vector<uint32_t>(bias_dims),
+                                            std::move(requantized_bias_data));
+          RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(new_bias_wrapper)),
+                        "Failed to add requantized bias tensor.");
+          input_names[2] = new_bias_name;
+        }
+      }
+    }
+
+    if (needs_fp32_fc) {
+      // Precompute fp32 weights from quantized weights so FC runs in float mode
+      if (input_names.size() >= 2 && has_quant_weights) {
+        TensorInfo weight_info = {};
+        RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Inputs()[1], weight_info));
+
+        const auto& weight_wrapper = qnn_model_wrapper.GetQnnTensorWrapper(input_names[1]);
+        const Qnn_Tensor_t& qnn_weight = weight_wrapper.GetQnnTensor();
+        const Qnn_ClientBuffer_t& w_buf = GetQnnTensorClientBuf(qnn_weight);
+
+        // Use wrapper dims (post-transpose) and wrapper quant params (already transposed)
+        const auto& w_dims = weight_wrapper.GetTensorDims();
+        const auto& w_qp = weight_wrapper.GetQnnQuantParams();
+        std::vector<float> weight_scales;
+        RETURN_IF_ERROR(w_qp.GetScales(weight_scales));
+        std::vector<int32_t> weight_offsets(weight_scales.size(), 0);
+
+        size_t num_elements = 1;
+        for (auto d : w_dims) num_elements *= d;
+
+        std::vector<float> fp32_weights(num_elements);
+        std::optional<int64_t> axis = w_qp.IsPerChannel() ? std::optional<int64_t>(0) : std::nullopt;
+        RETURN_IF_ERROR(utils::DequantizePerChannel(
+            gsl::span<const uint8_t>(static_cast<const uint8_t*>(w_buf.data), w_buf.dataSize),
+            gsl::span<const uint32_t>(w_dims.data(), w_dims.size()),
+            weight_scales, weight_offsets,
+            fp32_weights, weight_info.qnn_data_type, axis));
+
+        std::vector<uint8_t> fp32_bytes(num_elements * sizeof(float));
+        memcpy(fp32_bytes.data(), fp32_weights.data(), fp32_bytes.size());
+
+        const std::string fp32_weight_name =
+            utils::UniqueNameGenerator().New(input_names[1], "_fp32");
+        QnnTensorWrapper fp32_weight_tensor(fp32_weight_name, QNN_TENSOR_TYPE_STATIC,
+                                            QNN_DATATYPE_FLOAT_32, QnnQuantParamsWrapper(),
+                                            std::vector<uint32_t>(w_dims.begin(), w_dims.end()),
+                                            std::move(fp32_bytes));
+        RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(fp32_weight_tensor)),
+                      "Failed to add fp32 weight tensor.");
+        input_names[1] = fp32_weight_name;
+      }
+
+      // Insert QNN Dequantize op for activation (input[0]): per-tensor quantized → fp32
+      if (is_quant_to_float) {
+        const std::string dq_output_name =
+            utils::UniqueNameGenerator().New(input_names[0], "_dequantize");
+        std::vector<uint32_t> dq_shape = input_info.shape;
+        QnnTensorWrapper dq_output_tensor(dq_output_name, QNN_TENSOR_TYPE_NATIVE,
+                                          QNN_DATATYPE_FLOAT_32, QnnQuantParamsWrapper(),
+                                          std::move(dq_shape));
+        RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(dq_output_tensor)),
+                      "Failed to add Dequantize output tensor for activation.");
+        RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
+                          utils::UniqueNameGenerator().New(dq_output_name, QNN_OP_DEQUANTIZE),
+                          QNN_OP_PACKAGE_NAME_QTI_AISW,
+                          QNN_OP_DEQUANTIZE,
+                          {input_names[0]},
+                          {dq_output_name},
+                          {},
+                          do_op_validation),
+                      "Failed to add Dequantize node for activation.");
+        input_names[0] = dq_output_name;
+      }
+    }
+  }
+
   return Ort::Status();
 }
 
@@ -171,24 +350,54 @@ Ort::Status GemmOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mode
     split_gemm = split_gemm || qnn_model_wrapper.GetTensorType(input_c.name) == QNN_TENSOR_TYPE_NATIVE;
   }
 
-  if (split_gemm) {
-    // If split_gemm, input and output of Gemm must at least 2d.
-    const std::string& org_output_name = node_unit.Outputs()[0].name;
-    TensorInfo input_info = {};
-    RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Inputs()[0], input_info));
-    TensorInfo output_info = {};
-    RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Outputs()[0], output_info));
-    std::vector<uint32_t> output_shape = output_info.shape;
-    QnnQuantParamsWrapper op_output_quant_param = output_info.quant_param.Copy();
+  TensorInfo act_info = {};
+  RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Inputs()[0], act_info));
+  TensorInfo out_info = {};
+  RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Outputs()[0], out_info));
 
-    const bool is_graph_output = qnn_model_wrapper.IsGraphOutput(org_output_name);
+  const bool has_input_quant = node_unit.Inputs()[0].quant_param.has_value();
+  const bool has_output_quant = node_unit.Outputs()[0].quant_param.has_value();
+  const bool is_mixed_precision = act_info.qnn_data_type != out_info.qnn_data_type;
+
+  // Sub-cases: narrowing (e.g., U16->U8), float-to-quant (fp32->U8/U16)
+  const bool is_narrowing = is_mixed_precision && has_input_quant && has_output_quant &&
+                            utils::GetElementSizeByType(act_info.qnn_data_type) >
+                                utils::GetElementSizeByType(out_info.qnn_data_type);
+  const bool is_float_to_quant = is_mixed_precision && !has_input_quant && has_output_quant &&
+                                 act_info.qnn_data_type == QNN_DATATYPE_FLOAT_32;
+
+  const std::string& org_output_name = node_unit.Outputs()[0].name;
+  const bool is_graph_output = qnn_model_wrapper.IsGraphOutput(org_output_name);
+
+  // For narrowing/float-to-quant, FC output uses intermediate name; post-processing follows
+  const std::string fc_chain_output_name = (is_narrowing || is_float_to_quant)
+                                               ? utils::UniqueNameGenerator().New(org_output_name, "_pre_convert")
+                                               : org_output_name;
+
+  QnnQuantParamsWrapper narrowing_fc_qp;
+  float narrowing_act_scale = 0.0f;
+  if (is_narrowing) {
+    RETURN_IF_NOT(out_info.quant_param.IsPerTensor(),
+                  "Mixed-precision Gemm output only supports per-tensor quantization");
+    const Qnn_QuantizeParams_t& out_qp = out_info.quant_param.Get();
+    narrowing_act_scale = out_qp.scaleOffsetEncoding.scale / 256.0f;
+    int32_t narrowing_offset = out_qp.scaleOffsetEncoding.offset * 256;
+    narrowing_fc_qp = QnnQuantParamsWrapper(narrowing_act_scale, narrowing_offset);
+
+    // No bias requantization needed for narrowing: FC accumulates at input_act_scale * weight_scale,
+    // which matches the original bias scale from weight_bias_quantization. The narrowing_fc_qp only
+    // controls how FC quantizes its accumulated output, not the accumulation itself.
+  }
+
+  if (split_gemm) {
+    std::vector<uint32_t> output_shape = out_info.shape;
 
     // Create FullyConnected Node
     std::vector<std::string> gemm_input_0_1;
     gemm_input_0_1.push_back(input_names[0]);
     gemm_input_0_1.push_back(input_names[1]);
-    const std::string fc_output_name = onnxruntime::qnn::utils::UniqueNameGenerator().New(org_output_name, "_fc");
-    QnnTensorWrapper fully_connected_output(fc_output_name, QNN_TENSOR_TYPE_NATIVE, input_info.qnn_data_type,
+    const std::string fc_output_name = utils::UniqueNameGenerator().New(org_output_name, "_fc");
+    QnnTensorWrapper fully_connected_output(fc_output_name, QNN_TENSOR_TYPE_NATIVE, act_info.qnn_data_type,
                                             QnnQuantParamsWrapper(), std::vector<uint32_t>(output_shape));
     RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(fully_connected_output)),
                   "Failed to add FullyConnected output tensor.");
@@ -201,26 +410,98 @@ Ort::Status GemmOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mode
                                                   do_op_validation),
                   "Failed to add FullyConnected node.");
 
-    // Create Add Node
-    Qnn_TensorType_t op_output_tensor_type = is_graph_output ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_NATIVE;
-    QnnTensorWrapper op_output_tensor_wrapper(org_output_name, op_output_tensor_type, output_info.qnn_data_type,
-                                              op_output_quant_param.Copy(), std::vector<uint32_t>(output_shape));
-    RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(op_output_tensor_wrapper)),
-                  "Failed to add ElementWiseAdd output tensor.");
-    std::string bias_name = input_names[2];
+    // Create Add Node — uses derived quant params when narrowing
+    Qnn_DataType_t add_out_type = (is_narrowing || is_float_to_quant) ? act_info.qnn_data_type : out_info.qnn_data_type;
+    QnnQuantParamsWrapper add_out_qp = is_narrowing        ? narrowing_fc_qp.Copy()
+                                       : is_float_to_quant ? QnnQuantParamsWrapper()
+                                                           : out_info.quant_param.Copy();
+    Qnn_TensorType_t add_tensor_type = (!(is_narrowing || is_float_to_quant) && is_graph_output)
+                                           ? QNN_TENSOR_TYPE_APP_READ
+                                           : QNN_TENSOR_TYPE_NATIVE;
+    QnnTensorWrapper add_output_tensor(fc_chain_output_name, add_tensor_type, add_out_type,
+                                       std::move(add_out_qp), std::vector<uint32_t>(output_shape));
+    RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(add_output_tensor)),
+                  "Failed to add ElementWiseAdd output tensor");
 
     RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(utils::UniqueNameGenerator().New(node_unit, QNN_OP_ELEMENT_WISE_ADD),
                                                   QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                   QNN_OP_ELEMENT_WISE_ADD,
-                                                  {fc_output_name, bias_name},
-                                                  {org_output_name},
+                                                  {fc_output_name, input_names[2]},
+                                                  {fc_chain_output_name},
                                                   {},
                                                   do_op_validation),
                   "Failed to add ElementWiseAdd node.");
+  } else if (is_narrowing) {
+    // Non-split path with narrowing: FC outputs input activation type, derived quant params
+    std::vector<uint32_t> output_shape = out_info.shape;
+    QnnTensorWrapper fc_output_tensor(fc_chain_output_name, QNN_TENSOR_TYPE_NATIVE, act_info.qnn_data_type,
+                                      narrowing_fc_qp.Copy(), std::vector<uint32_t>(output_shape));
+    RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(fc_output_tensor)),
+                  "Failed to add FullyConnected output tensor");
+    RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(utils::UniqueNameGenerator().New(node_unit, QNN_OP_FULLY_CONNECTED),
+                                                  QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                  QNN_OP_FULLY_CONNECTED,
+                                                  std::move(input_names),
+                                                  {fc_chain_output_name},
+                                                  {},
+                                                  do_op_validation),
+                  "Failed to add FullyConnected node");
+  } else if (is_float_to_quant) {
+    // Non-split path with float-to-quant: FC outputs fp32, Quantize follows
+    std::vector<uint32_t> output_shape = out_info.shape;
+    QnnTensorWrapper fc_output_tensor(fc_chain_output_name, QNN_TENSOR_TYPE_NATIVE, QNN_DATATYPE_FLOAT_32,
+                                      QnnQuantParamsWrapper(), std::vector<uint32_t>(output_shape));
+    RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(fc_output_tensor)),
+                  "Failed to add FullyConnected output tensor");
+    RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(utils::UniqueNameGenerator().New(node_unit, QNN_OP_FULLY_CONNECTED),
+                                                  QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                  QNN_OP_FULLY_CONNECTED,
+                                                  std::move(input_names),
+                                                  {fc_chain_output_name},
+                                                  {},
+                                                  do_op_validation),
+                  "Failed to add FullyConnected node");
   } else {
     RETURN_IF_ERROR(ProcessOutputs(qnn_model_wrapper, node_unit, std::move(input_names), {},
                                    logger, do_op_validation, GetQnnOpType(node_unit.OpType())));
   }
+
+  // Insert Convert after FC chain for narrowing (e.g., U16->U8)
+  if (is_narrowing) {
+    Qnn_TensorType_t final_tensor_type = is_graph_output ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_NATIVE;
+    QnnTensorWrapper final_output_tensor(org_output_name, final_tensor_type, out_info.qnn_data_type,
+                                         out_info.quant_param.Copy(), std::vector<uint32_t>(out_info.shape));
+    RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(final_output_tensor)),
+                  "Failed to add Convert output tensor");
+    RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
+                      utils::UniqueNameGenerator().New(org_output_name, QNN_OP_CONVERT),
+                      QNN_OP_PACKAGE_NAME_QTI_AISW,
+                      QNN_OP_CONVERT,
+                      {fc_chain_output_name},
+                      {org_output_name},
+                      {},
+                      do_op_validation),
+                  "Failed to add Convert node");
+  }
+
+  // Insert Quantize after FC chain for float-to-quant (fp32 -> quantized output)
+  if (is_float_to_quant) {
+    Qnn_TensorType_t final_tensor_type = is_graph_output ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_NATIVE;
+    QnnTensorWrapper final_output_tensor(org_output_name, final_tensor_type, out_info.qnn_data_type,
+                                         out_info.quant_param.Copy(), std::vector<uint32_t>(out_info.shape));
+    RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(final_output_tensor)),
+                  "Failed to add Quantize output tensor");
+    RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
+                      utils::UniqueNameGenerator().New(org_output_name, QNN_OP_QUANTIZE),
+                      QNN_OP_PACKAGE_NAME_QTI_AISW,
+                      QNN_OP_QUANTIZE,
+                      {fc_chain_output_name},
+                      {org_output_name},
+                      {},
+                      do_op_validation),
+                  "Failed to add Quantize node");
+  }
+
   return Ort::Status();
 }
 
