@@ -11,6 +11,7 @@
 #include <unordered_set>
 
 #include "HTP/QnnHtpGraph.h"
+#include "GPU/QnnGpuGraph.h"
 
 #include "core/providers/qnn/ort_api.h"
 #include "core/providers/qnn/builder/qnn_cache_compatibility_manager.h"
@@ -122,6 +123,8 @@ class QnnEp : public OrtEp, public ApiPtrs {
 
   void InitQnnHtpGraphConfigs(
       qnn::QnnConfigsBuilder<QnnGraph_Config_t, QnnHtpGraph_CustomConfig_t>& configs_builder) const;
+  void InitQnnGpuGraphConfigs(
+      qnn::QnnConfigsBuilder<QnnGraph_Config_t, QnnGpuGraph_CustomConfigV2_t>& configs_builder) const;
   std::unique_ptr<qnn::QnnSerializerConfig> InitQnnSerializerConfig() const;
 
   std::string FormatEPConfigKey(const std::string& key) const {
@@ -201,6 +204,12 @@ class QnnEp : public OrtEp, public ApiPtrs {
   qnn::HtpGraphFinalizationOptimizationMode htp_graph_finalization_opt_mode_ = qnn::HtpGraphFinalizationOptimizationMode::kDefault;
   int32_t vtcm_size_in_mb_ = 0;
   bool enable_HTP_FP16_precision_ = true;
+
+  // Configurations for GPU backend.
+  QnnGpu_Precision_t gpu_precision_mode_ = QNN_GPU_PRECISION_USER_PROVIDED;
+  bool gpu_disable_memory_optimizations_ = false;
+  bool gpu_disable_node_optimizations_ = false;
+  bool gpu_disable_rcq_ = false;
 
   bool dump_json_qnn_graph_ = false;
   std::string json_qnn_graph_dir_ = "";

@@ -192,6 +192,28 @@ Alternatively to setting profiling_level at compile time, profiling can be enabl
 |'0'|Default. Disabled.|
 |'1'|Enable the QNN HTP shared memory allocator. Requires libcdsprpc.so/dll to be available. [Code example](https://github.com/microsoft/onnxruntime/blob/544bdd60730270f49f6a5baafdff54065f626776/onnxruntime/test/shared_lib/test_inference.cc#L2262-L2354)|
 
+|`"gpu_precision_mode"`|Description|
+|---|---|
+|'0'|Sets the precision mode to floating point 32-bit (FP32).|
+|'1'|Sets the precision mode to floating point 16-bit (FP16).|
+|'2'|Sets the precision mode to FP16 for storage and FP32 for calculations.|
+|'3'|Default. Uses the tensor data type provided by the user.|
+
+|`"disable_gpu_memory_optimizations"`|Description|
+|---|---|
+|'0'|Disable QNN GPU memory optimizations.|
+|'1'|Default. Enabled.|
+
+|`"disable_gpu_node_optimizations"`|Description|
+|---|---|
+|'0'|Disable QNN GPU node optimizations.|
+|'1'|Default. Enabled.|
+
+|`"disable_gpu_queue_recording"`|Description|
+|---|---|
+|'0'|Disable QNN GPU recordable command queue.|
+|'1'|Default. Enabled.|
+
 |`"op_packages"`|Description|
 |---|---|
 |Op package config (string)|Register custom op packages. Format: `<OpType>:<PackagePath>:<InterfaceSymbolName>[:<Target>]`. Multiple packages can be separated by commas.|

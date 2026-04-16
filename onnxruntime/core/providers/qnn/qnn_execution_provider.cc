@@ -19,6 +19,7 @@
 #endif
 
 #include "HTP/QnnHtpGraph.h"
+#include "GPU/QnnGpuGraph.h"
 
 #include "core/providers/qnn/ort_api.h"
 #include "core/providers/qnn/qnn_provider_factory.h"
@@ -776,6 +777,102 @@ QnnEp::QnnEp(QnnEpFactory& factory,
               ORT_LOGGING_LEVEL_VERBOSE,
               ("User specified enable_htp_fp16_precision: " + enable_htp_fp16_precision_str).c_str());
 
+  // GPU precision mode
+  std::string gpu_precision_mode_str;
+  GetSessionConfigEntryOrDefault(ort_api,
+                                 session_options_,
+                                 FormatEPConfigKey("gpu_precision_mode"),
+                                 "3",  // user-provided
+                                 gpu_precision_mode_str);
+  if (gpu_precision_mode_str == "0") {
+    gpu_precision_mode_ = QNN_GPU_PRECISION_FP32;
+  } else if (gpu_precision_mode_str == "1") {
+    gpu_precision_mode_ = QNN_GPU_PRECISION_FP16;
+  } else if (gpu_precision_mode_str == "2") {
+    gpu_precision_mode_ = QNN_GPU_PRECISION_HYBRID;
+  } else if (gpu_precision_mode_str == "3") {
+    gpu_precision_mode_ = QNN_GPU_PRECISION_USER_PROVIDED;
+  } else {
+    ORT_CXX_LOG(logger_,
+                ORT_LOGGING_LEVEL_ERROR,
+                ("Invalid value for gpu_precision_mode: " +
+                 gpu_precision_mode_str +
+                 " only 0, 1, 2, or 3 allowed. Set to 3.")
+                    .c_str());
+  }
+  ORT_CXX_LOG(logger_,
+              ORT_LOGGING_LEVEL_VERBOSE,
+              ("User specified gpu_precision_mode: " + gpu_precision_mode_str).c_str());
+
+  // GPU memory optimizations
+  std::string disable_gpu_memory_optimizations_str;
+  GetSessionConfigEntryOrDefault(ort_api,
+                                 session_options_,
+                                 FormatEPConfigKey("disable_gpu_memory_optimizations"),
+                                 "0",
+                                 disable_gpu_memory_optimizations_str);
+  if (disable_gpu_memory_optimizations_str == "1") {
+    gpu_disable_memory_optimizations_ = true;
+  } else if (disable_gpu_memory_optimizations_str == "0") {
+    gpu_disable_memory_optimizations_ = false;
+  } else {
+    ORT_CXX_LOG(logger_,
+                ORT_LOGGING_LEVEL_VERBOSE,
+                ("Invalid disable_gpu_memory_optimizations: " +
+                 disable_gpu_memory_optimizations_str +
+                 " only 0 or 1 allowed. Set to 0.")
+                    .c_str());
+  }
+  ORT_CXX_LOG(logger_,
+              ORT_LOGGING_LEVEL_VERBOSE,
+              ("disable_gpu_memory_optimizations: " + disable_gpu_memory_optimizations_str).c_str());
+
+  // GPU node optimizations
+  std::string disable_gpu_node_optimizations_str;
+  GetSessionConfigEntryOrDefault(ort_api,
+                                 session_options_,
+                                 FormatEPConfigKey("disable_gpu_node_optimizations"),
+                                 "0",
+                                 disable_gpu_node_optimizations_str);
+  if (disable_gpu_node_optimizations_str == "1") {
+    gpu_disable_node_optimizations_ = true;
+  } else if (disable_gpu_node_optimizations_str == "0") {
+    gpu_disable_node_optimizations_ = false;
+  } else {
+    ORT_CXX_LOG(logger_,
+                ORT_LOGGING_LEVEL_VERBOSE,
+                ("Invalid disable_gpu_node_optimizations: " +
+                 disable_gpu_node_optimizations_str +
+                 " only 0 or 1 allowed. Set to 0.")
+                    .c_str());
+  }
+  ORT_CXX_LOG(logger_,
+              ORT_LOGGING_LEVEL_VERBOSE,
+              ("disable_gpu_node_optimizations: " + disable_gpu_node_optimizations_str).c_str());
+
+  // GPU RCQ
+  std::string disable_gpu_queue_recording_str;
+  GetSessionConfigEntryOrDefault(ort_api,
+                                 session_options_,
+                                 FormatEPConfigKey("disable_gpu_queue_recording"),
+                                 "0",
+                                 disable_gpu_queue_recording_str);
+  if (disable_gpu_queue_recording_str == "1") {
+    gpu_disable_rcq_ = true;
+  } else if (disable_gpu_queue_recording_str == "0") {
+    gpu_disable_rcq_ = false;
+  } else {
+    ORT_CXX_LOG(logger_,
+                ORT_LOGGING_LEVEL_VERBOSE,
+                ("Invalid disable_gpu_queue_recording: " +
+                 disable_gpu_queue_recording_str +
+                 " only 0 or 1 allowed. Set to 0.")
+                    .c_str());
+  }
+  ORT_CXX_LOG(logger_,
+              ORT_LOGGING_LEVEL_VERBOSE,
+              ("disable_gpu_queue_recording: " + disable_gpu_queue_recording_str).c_str());
+
   std::string num_graph_prepare_threads_str;
   GetSessionConfigEntryOrDefault(ort_api,
                                  session_options_,
@@ -1250,6 +1347,47 @@ void QnnEp::InitQnnHtpGraphConfigs(
       graph_precision_config->option = QNN_GRAPH_CONFIG_OPTION_CUSTOM;
       graph_precision_config->customConfig = htp_graph_precision_config;
     }
+  }
+}
+
+void QnnEp::InitQnnGpuGraphConfigs(
+    qnn::QnnConfigsBuilder<QnnGraph_Config_t, QnnGpuGraph_CustomConfigV2_t>& configs_builder) const {
+  if (IsGpuBackend(qnn_backend_manager_->GetQnnBackendType())) {
+    gsl::not_null<QnnGpuGraph_CustomConfigV2_t*> gpu_graph_precision_config = configs_builder.PushCustomConfig();
+    gpu_graph_precision_config->handshake = QNN_GPU_GRAPH_V2_HANDSHAKE_FLAG;
+    gpu_graph_precision_config->option = QNN_GPU_GRAPH_CONFIG_OPTION_PRECISION;
+    gpu_graph_precision_config->precision = gpu_precision_mode_;
+
+    gsl::not_null<QnnGraph_Config_t*> graph_precision_config = configs_builder.PushConfig();
+    graph_precision_config->option = QNN_GRAPH_CONFIG_OPTION_CUSTOM;
+    graph_precision_config->customConfig = gpu_graph_precision_config;
+
+    gsl::not_null<QnnGpuGraph_CustomConfigV2_t*> gpu_graph_mem_opt_config = configs_builder.PushCustomConfig();
+    gpu_graph_mem_opt_config->handshake = QNN_GPU_GRAPH_V2_HANDSHAKE_FLAG;
+    gpu_graph_mem_opt_config->option = QNN_GPU_GRAPH_CONFIG_OPTION_DISABLE_MEMORY_OPTIMIZATIONS;
+    gpu_graph_mem_opt_config->disableMemoryOptimizations = gpu_disable_memory_optimizations_;
+
+    gsl::not_null<QnnGraph_Config_t*> graph_mem_opt_config = configs_builder.PushConfig();
+    graph_mem_opt_config->option = QNN_GRAPH_CONFIG_OPTION_CUSTOM;
+    graph_mem_opt_config->customConfig = gpu_graph_mem_opt_config;
+
+    gsl::not_null<QnnGpuGraph_CustomConfigV2_t*> gpu_graph_node_opt_config = configs_builder.PushCustomConfig();
+    gpu_graph_node_opt_config->handshake = QNN_GPU_GRAPH_V2_HANDSHAKE_FLAG;
+    gpu_graph_node_opt_config->option = QNN_GPU_GRAPH_CONFIG_OPTION_DISABLE_NODE_OPTIMIZATIONS;
+    gpu_graph_node_opt_config->disableNodeOptimizations = gpu_disable_node_optimizations_;
+
+    gsl::not_null<QnnGraph_Config_t*> graph_node_opt_config = configs_builder.PushConfig();
+    graph_node_opt_config->option = QNN_GRAPH_CONFIG_OPTION_CUSTOM;
+    graph_node_opt_config->customConfig = gpu_graph_node_opt_config;
+
+    gsl::not_null<QnnGpuGraph_CustomConfigV2_t*> gpu_graph_rcq_config = configs_builder.PushCustomConfig();
+    gpu_graph_rcq_config->handshake = QNN_GPU_GRAPH_V2_HANDSHAKE_FLAG;
+    gpu_graph_rcq_config->option = QNN_GPU_GRAPH_CONFIG_OPTION_DISABLE_QUEUE_RECORDING;
+    gpu_graph_rcq_config->disableQueueRecording = gpu_disable_rcq_;
+
+    gsl::not_null<QnnGraph_Config_t*> graph_rcq_config = configs_builder.PushConfig();
+    graph_rcq_config->option = QNN_GRAPH_CONFIG_OPTION_CUSTOM;
+    graph_rcq_config->customConfig = gpu_graph_rcq_config;
   }
 }
 
@@ -2009,12 +2147,23 @@ OrtStatus* ORT_API_CALL QnnEp::CompileImpl(_In_ OrtEp* this_ptr,
         QNN_GRAPH_CONFIG_INIT, QNN_HTP_GRAPH_CUSTOM_CONFIG_INIT);
     ep->InitQnnHtpGraphConfigs(htp_graph_configs_builder);
 
+    qnn::QnnConfigsBuilder<QnnGraph_Config_t, QnnGpuGraph_CustomConfigV2_t> gpu_graph_configs_builder(
+        QNN_GRAPH_CONFIG_INIT, {});
+    ep->InitQnnGpuGraphConfigs(gpu_graph_configs_builder);
+
     std::vector<const QnnGraph_Config_t*> all_graph_configs;
     const QnnGraph_Config_t** htp_configs = htp_graph_configs_builder.GetQnnConfigs();
     if (htp_configs) {
       // Reserve enough for configs + nullptr
       all_graph_configs.reserve(htp_graph_configs_builder.GetSize() + 1);
       for (const QnnGraph_Config_t** config = htp_configs; *config; ++config) {
+        all_graph_configs.push_back(*config);
+      }
+    }
+
+    const QnnGraph_Config_t** gpu_configs = gpu_graph_configs_builder.GetQnnConfigs();
+    if (gpu_configs) {
+      for (const QnnGraph_Config_t** config = gpu_configs; *config; ++config) {
         all_graph_configs.push_back(*config);
       }
     }
