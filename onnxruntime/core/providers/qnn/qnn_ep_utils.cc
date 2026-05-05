@@ -872,7 +872,7 @@ bool OrtMatMulNodeGroupSelector::Check(const OrtGraph* graph, const OrtApi& ort_
     }
 
     auto dt_output = GetNodeOutputDataType(q_nodes[0], ort_api, 0);
-    if (dt_output.has_value() and IsDisallowedType(dt_output.value(), allow_16bit_, allow_4bit_)) {
+    if (dt_output.has_value() && IsDisallowedType(dt_output.value(), allow_16bit_, allow_4bit_)) {
       return false;
     }
     return true;
