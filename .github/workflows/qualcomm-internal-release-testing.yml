@@ -83,6 +83,10 @@ jobs:
 
       - name: Download Wheels from Artifactory
         run: |
+          echo "=== Listing what's actually under ${PYPI_REPO}/onnxruntime-qnn/ ==="
+          jf rt search "${PYPI_REPO}/onnxruntime-qnn/*" --include-dirs=true || true
+          echo "=== End listing ==="
+
           mkdir -p "${{ github.workspace }}/release_testing/wheel"
           jf rt download \
             "${PYPI_REPO}/onnxruntime-qnn/${VERSION_FROM}/*.whl" \
