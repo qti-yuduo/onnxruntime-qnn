@@ -55,44 +55,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup JFrog CLI
-        uses: jfrog/setup-jfrog-cli@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          disable-auto-build-publish: true
-          disable-job-summary: true
-        env:
-          JF_URL: ${{ secrets.BUILD_ARTIFACTORY_URL }}
-          JF_ACCESS_TOKEN: ${{ secrets.BUILD_ARTIFACTORY_TOKEN }}
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install requests
 
       # ---------------------------------
       # Step 1: Download Wheels
       # ---------------------------------
 
-      - name: Resolve PyPI Repository
-        run: |
-          case "$INDEX_SERVER_FROM" in
-            test-users)   echo "PYPI_REPO=aisw-pypi-test-users"          >> "$GITHUB_ENV" ;;
-            test-project) echo "PYPI_REPO=aisw-pypi-test-project-local"  >> "$GITHUB_ENV" ;;
-            project)      echo "PYPI_REPO=aisw-pypi-project"             >> "$GITHUB_ENV" ;;
-            public)       echo "PYPI_REPO=aisw-pypi-public"              >> "$GITHUB_ENV" ;;
-            *)
-              echo "ERROR: Unknown index_server_from value: '$INDEX_SERVER_FROM'"
-              exit 1
-              ;;
-          esac
-
       - name: Download Wheels from Artifactory
+        env:
+          ARTIFACTORY_BASE_URL: ${{ secrets.ARTIFACTORY_BASE_URL }}
+          JFROG_API_KEY:        ${{ secrets.JFROG_API_KEY }}
         run: |
-          echo "=== Listing what's actually under ${PYPI_REPO}/onnxruntime-qnn/ ==="
-          jf rt search "${PYPI_REPO}/onnxruntime-qnn/*" --include-dirs=true || true
-          echo "=== End listing ==="
-
-          mkdir -p "${{ github.workspace }}/release_testing/wheel"
-          jf rt download \
-            "${PYPI_REPO}/onnxruntime-qnn/${VERSION_FROM}/*.whl" \
-            "${{ github.workspace }}/release_testing/wheel" \
-            --flat=true \
-            --fail-no-op=true
+          python qcom/scripts/release_testing/download_artifacts.py \
+            --artifact_folder_name      "${VERSION_FROM}" \
+            --artifact_to_be_downloaded wheel \
+            --index_server              "${INDEX_SERVER_FROM}" \
+            --output_directory          "${{ github.workspace }}/release_testing/wheel"
 
       # ---------------------------------
       # Step 2: Verify Count of Wheels
