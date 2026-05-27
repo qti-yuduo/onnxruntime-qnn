@@ -62,13 +62,22 @@ jobs:
 
       - name: Resolve PyPI Repository
         run: |
-          case "${{ inputs.index_server_from }}" in
+          # Default to test-users when the input was passed as an empty string
+          # (this can happen if the dispatch UI field was cleared, or via the
+          # REST workflow_dispatch endpoint which doesn't always apply YAML defaults).
+          index_server_from="${{ inputs.index_server_from }}"
+          if [ -z "$index_server_from" ]; then
+            echo "WARNING: inputs.index_server_from was empty, falling back to 'project'"
+            index_server_from="project"
+          fi
+
+          case "$index_server_from" in
             test-users)   echo "PYPI_REPO=aisw-pypi-test-users"          >> "$GITHUB_ENV" ;;
             test-project) echo "PYPI_REPO=aisw-pypi-test-project-local"  >> "$GITHUB_ENV" ;;
             project)      echo "PYPI_REPO=aisw-pypi-project"             >> "$GITHUB_ENV" ;;
             public)       echo "PYPI_REPO=aisw-pypi-public"              >> "$GITHUB_ENV" ;;
             *)
-              echo "ERROR: Unknown index_server_from value: ${{ inputs.index_server_from }}"
+              echo "ERROR: Unknown index_server_from value: '$index_server_from'"
               exit 1
               ;;
           esac
