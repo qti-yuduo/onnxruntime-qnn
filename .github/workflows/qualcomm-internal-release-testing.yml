@@ -38,6 +38,14 @@ on:
   workflow_dispatch:
     inputs: *common_inputs
 
+# Resolve inputs once at the workflow level. Push triggers don't supply inputs
+# (and YAML `default:` values are not applied to push events), so each entry
+# falls back to a sensible default when the dispatch/call value is empty.
+env:
+  ARTIFACT_FORMAT:   ${{ inputs.artifact_format   || 'wheel' }}
+  VERSION_FROM:      ${{ inputs.version_from      || '2.2.0' }}
+  INDEX_SERVER_FROM: ${{ inputs.index_server_from || 'project' }}
+
 jobs:
   download-wheel-from-artifactory:
     name: "Download and Verify Wheels from Artifactory"
@@ -62,22 +70,13 @@ jobs:
 
       - name: Resolve PyPI Repository
         run: |
-          # Default to test-users when the input was passed as an empty string
-          # (this can happen if the dispatch UI field was cleared, or via the
-          # REST workflow_dispatch endpoint which doesn't always apply YAML defaults).
-          index_server_from="${{ inputs.index_server_from }}"
-          if [ -z "$index_server_from" ]; then
-            echo "WARNING: inputs.index_server_from was empty, falling back to 'project'"
-            index_server_from="project"
-          fi
-
-          case "$index_server_from" in
+          case "$INDEX_SERVER_FROM" in
             test-users)   echo "PYPI_REPO=aisw-pypi-test-users"          >> "$GITHUB_ENV" ;;
             test-project) echo "PYPI_REPO=aisw-pypi-test-project-local"  >> "$GITHUB_ENV" ;;
             project)      echo "PYPI_REPO=aisw-pypi-project"             >> "$GITHUB_ENV" ;;
             public)       echo "PYPI_REPO=aisw-pypi-public"              >> "$GITHUB_ENV" ;;
             *)
-              echo "ERROR: Unknown index_server_from value: '$index_server_from'"
+              echo "ERROR: Unknown index_server_from value: '$INDEX_SERVER_FROM'"
               exit 1
               ;;
           esac
@@ -86,7 +85,7 @@ jobs:
         run: |
           mkdir -p "${{ github.workspace }}/release_testing/wheel"
           jf rt download \
-            "${PYPI_REPO}/onnxruntime-qnn/${{ inputs.version_from }}/*.whl" \
+            "${PYPI_REPO}/onnxruntime-qnn/${VERSION_FROM}/*.whl" \
             "${{ github.workspace }}/release_testing/wheel" \
             --flat=true \
             --fail-no-op=true
@@ -161,7 +160,7 @@ jobs:
         run: |
           & "${{ github.workspace }}/qcom/scripts/release_testing/verify_windows_wheel_metadata.ps1" `
             -WheelDirectory "${{ github.workspace }}/release_testing/wheel" `
-            -ExpectedVersion "${{ inputs.version_from }}"
+            -ExpectedVersion "$env:VERSION_FROM"
 
   test-wheel-on-windows:
     name: "Test Wheel - ${{ matrix.platform.name }} - Py${{ matrix.python-version }}"
@@ -206,7 +205,7 @@ jobs:
             -PythonVersion   "${{ matrix.python-version }}" `
             -WheelArch       "${{ matrix.platform.wheel_arch }}" `
             -WheelDirectory  "${{ github.workspace }}/release_testing/wheel" `
-            -ExpectedVersion "${{ inputs.version_from }}" `
+            -ExpectedVersion "$env:VERSION_FROM" `
             -SamplePath      "${{ github.workspace }}/qcom/samples/test_wheel.py"
 
   test-wheel-on-linux:
@@ -242,7 +241,7 @@ jobs:
             --python-version    "${{ matrix.python-version }}" \
             --wheel-arch        "manylinux_2_34_aarch64" \
             --wheel-directory   "${GITHUB_WORKSPACE}/release_testing/wheel" \
-            --expected-version  "${{ inputs.version_from }}" \
+            --expected-version  "${VERSION_FROM}" \
             --sample-path       "${GITHUB_WORKSPACE}/qcom/samples/test_wheel.py"
 
   verify-backward-compatibility:
