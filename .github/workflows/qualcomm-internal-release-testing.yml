@@ -9,6 +9,9 @@ permissions:
   id-token: write
 
 on:
+  push:
+    branches:
+      - dev/qti-mbadnara/release-testing-workflow
   workflow_call:
     inputs: &common_inputs
       artifact_format:
@@ -23,13 +26,13 @@ on:
           For nuget package, the format should be <version>.<version>.<version>-<suffix>.
             Please note that underscore (_) is not allowed in the version format.
         type: string
-        default: "0.1.0.test0"
+        default: "2.2.0"
       index_server_from:
         description: |
           From which server the artifact is located. Choose one of
           ["test-users", "test-project", "project", "public"].
         type: string
-        default: "test-users"
+        default: "project"
   workflow_dispatch:
     inputs: *common_inputs
 
