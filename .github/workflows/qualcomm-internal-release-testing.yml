@@ -1,0 +1,269 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: MIT
+
+name: Perform ONNX Runtime Execution Provider wheel, nuget, archive Release Testing
+
+permissions:
+  checks: write
+  contents: read
+  id-token: write
+
+on:
+  workflow_call:
+    inputs: &common_inputs
+      artifact_format:
+        description: "The format of artifact. Choose one of [wheel, nuget, zip, tgz, all]."
+        type: string
+        default: "wheel"
+      version_from:
+        description: |
+          Source version of artifact.
+          For python wheel, the format should be <version>.<version>.<version><.><suffix>.
+            And the suffix should be <letters><numbers>.
+          For nuget package, the format should be <version>.<version>.<version>-<suffix>.
+            Please note that underscore (_) is not allowed in the version format.
+        type: string
+        default: "0.1.0.test0"
+      index_server_from:
+        description: |
+          From which server the artifact is located. Choose one of
+          ["test-users", "test-project", "project", "public"].
+        type: string
+        default: "test-users"
+  workflow_dispatch:
+    inputs: *common_inputs
+
+jobs:
+  download-wheel-from-artifactory:
+    name: "Download and Verify Wheels from Artifactory"
+    runs-on: [Linux, self-hosted, Build]
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v5
+        with:
+          disable-auto-build-publish: true
+          disable-job-summary: true
+        env:
+          JF_URL: ${{ secrets.BUILD_ARTIFACTORY_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.BUILD_ARTIFACTORY_TOKEN }}
+
+      # ---------------------------------
+      # Step 1: Download Wheels
+      # ---------------------------------
+
+      - name: Resolve PyPI Repository
+        run: |
+          case "${{ inputs.index_server_from }}" in
+            test-users)   echo "PYPI_REPO=aisw-pypi-test-users"          >> "$GITHUB_ENV" ;;
+            test-project) echo "PYPI_REPO=aisw-pypi-test-project-local"  >> "$GITHUB_ENV" ;;
+            project)      echo "PYPI_REPO=aisw-pypi-project"             >> "$GITHUB_ENV" ;;
+            public)       echo "PYPI_REPO=aisw-pypi-public"              >> "$GITHUB_ENV" ;;
+            *)
+              echo "ERROR: Unknown index_server_from value: ${{ inputs.index_server_from }}"
+              exit 1
+              ;;
+          esac
+
+      - name: Download Wheels from Artifactory
+        run: |
+          mkdir -p "${{ github.workspace }}/release_testing/wheel"
+          jf rt download \
+            "${PYPI_REPO}/onnxruntime-qnn/${{ inputs.version_from }}/*.whl" \
+            "${{ github.workspace }}/release_testing/wheel" \
+            --flat=true \
+            --fail-no-op=true
+
+      # ---------------------------------
+      # Step 2: Verify Count of Wheels
+      # ---------------------------------
+
+      - name: Verify Count of Wheels
+        run: |
+          wheel_dir="${{ github.workspace }}/release_testing/wheel"
+          win_arm64=$(find "$wheel_dir" -maxdepth 1 -name "*win_arm64.whl"              | wc -l)
+          win_amd64=$(find "$wheel_dir" -maxdepth 1 -name "*win_amd64.whl"              | wc -l)
+          manylinux=$(find "$wheel_dir" -maxdepth 1 -name "*manylinux_2_34_aarch64.whl" | wc -l)
+          total=$(find "$wheel_dir" -maxdepth 1 -name "*.whl"                           | wc -l)
+          other=$(( total - win_arm64 - win_amd64 - manylinux ))
+
+          echo "win_arm64:                  $win_arm64"
+          echo "win_amd64:                  $win_amd64"
+          echo "manylinux_2_34_aarch64:     $manylinux"
+          echo "other:                      $other"
+          echo "total:                      $total"
+
+          errors=0
+          [ "$win_arm64" -eq 4 ] || { echo "ERROR: Expected 4 win_arm64 wheels, found $win_arm64";           errors=1; }
+          [ "$win_amd64" -eq 4 ] || { echo "ERROR: Expected 4 win_amd64 wheels, found $win_amd64";           errors=1; }
+          [ "$manylinux" -eq 4 ] || { echo "ERROR: Expected 4 manylinux_2_34_aarch64 wheels, found $manylinux"; errors=1; }
+          if [ "$other" -gt 0 ]; then
+            echo "ERROR: Found $other unexpected wheel(s):"
+            find "$wheel_dir" -maxdepth 1 -name "*.whl" \
+              ! -name "*win_arm64.whl" \
+              ! -name "*win_amd64.whl" \
+              ! -name "*manylinux_2_34_aarch64.whl"
+            errors=1
+          fi
+
+          [ "$errors" -eq 0 ] || exit 1
+          echo "Wheel count validation passed: 4 win_arm64, 4 win_amd64, 4 manylinux_2_34_aarch64"
+
+      # ---------------------------------
+      # Hand off wheels to Windows job
+      # ---------------------------------
+
+      - name: Upload Wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-test-wheels-${{ github.run_id }}
+          path: "${{ github.workspace }}/release_testing/wheel/*.whl"
+          if-no-files-found: error
+
+  verify-windows-wheel-metadata:
+    name: "Verify Windows Wheel Metadata"
+    runs-on: [Windows, self-hosted, Build]
+    needs: [download-wheel-from-artifactory]
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: release-test-wheels-${{ github.run_id }}
+          path: "${{ github.workspace }}/release_testing/wheel"
+
+      # ---------------------------------
+      # Step 3: Verify Windows Wheel Metadata
+      # ---------------------------------
+
+      - name: Verify Windows Wheel Metadata
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}/qcom/scripts/release_testing/verify_windows_wheel_metadata.ps1" `
+            -WheelDirectory "${{ github.workspace }}/release_testing/wheel" `
+            -ExpectedVersion "${{ inputs.version_from }}"
+
+  test-wheel-on-windows:
+    name: "Test Wheel - ${{ matrix.platform.name }} - Py${{ matrix.python-version }}"
+    needs: [download-wheel-from-artifactory]
+    runs-on: ${{ matrix.platform.os }}
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: "Windows ARM64"
+            os: [Windows, self-hosted, ARM64]
+            wheel_arch: win_arm64
+          - name: "Windows x86_64"
+            os: [Windows, self-hosted, x86_64]
+            wheel_arch: win_amd64
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: release-test-wheels-${{ github.run_id }}
+          path: "${{ github.workspace }}/release_testing/wheel"
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # ---------------------------------
+      # Step 4 (Windows): Test Wheel
+      # ---------------------------------
+
+      - name: Test Wheel
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}/qcom/scripts/release_testing/install_and_test_wheel.ps1" `
+            -PythonVersion   "${{ matrix.python-version }}" `
+            -WheelArch       "${{ matrix.platform.wheel_arch }}" `
+            -WheelDirectory  "${{ github.workspace }}/release_testing/wheel" `
+            -ExpectedVersion "${{ inputs.version_from }}" `
+            -SamplePath      "${{ github.workspace }}/qcom/samples/test_wheel.py"
+
+  test-wheel-on-linux:
+    name: "Test Wheel - Linux aarch64 - Py${{ matrix.python-version }}"
+    needs: [download-wheel-from-artifactory]
+    runs-on: [Linux, self-hosted, ARM64]
+    container:
+      image: quay.io/pypa/manylinux_2_34_aarch64
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: release-test-wheels-${{ github.run_id }}
+          path: "${{ github.workspace }}/release_testing/wheel"
+
+      # ---------------------------------
+      # Step 4 (Linux): Test Wheel
+      # ---------------------------------
+
+      - name: Test Wheel
+        shell: bash
+        run: |
+          bash "${GITHUB_WORKSPACE}/qcom/scripts/release_testing/install_and_test_wheel.sh" \
+            --python-version    "${{ matrix.python-version }}" \
+            --wheel-arch        "manylinux_2_34_aarch64" \
+            --wheel-directory   "${GITHUB_WORKSPACE}/release_testing/wheel" \
+            --expected-version  "${{ inputs.version_from }}" \
+            --sample-path       "${GITHUB_WORKSPACE}/qcom/samples/test_wheel.py"
+
+  verify-backward-compatibility:
+    name: "Verify Backward Compatibility (Windows ARM64, Py3.12)"
+    runs-on: [Windows, self-hosted, ARM64]
+    needs: [download-wheel-from-artifactory]
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: release-test-wheels-${{ github.run_id }}
+          path: "${{ github.workspace }}/release_testing/wheel"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ---------------------------------
+      # Step 5: Verify Backward Compatibility
+      #   - Install onnxruntime-qnn from the cp312 win_arm64 wheel
+      #   - Replace bundled onnxruntime with onnxruntime==1.24.2
+      #   - Run the sample to confirm the EP still loads against the older runtime
+      # ---------------------------------
+
+      - name: Backward Compatibility Test
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}/qcom/scripts/release_testing/verify_backward_compatibility.ps1" `
+            -PythonVersion       "3.12" `
+            -WheelArch           "win_arm64" `
+            -WheelDirectory      "${{ github.workspace }}/release_testing/wheel" `
+            -OnnxruntimeVersion  "1.24.2" `
+            -SamplePath          "${{ github.workspace }}/qcom/samples/test_wheel.py"
