@@ -74,7 +74,7 @@ jobs:
         run: |
           python qcom/scripts/release_testing/download_artifacts.py \
             --artifact_folder_name      "${VERSION_FROM}" \
-            --artifact_to_be_downloaded wheel \
+            --artifact_to_be_downloaded "${ARTIFACT_FORMAT}" \
             --index_server              "${INDEX_SERVER_FROM}" \
             --output_directory          "${{ github.workspace }}/release_testing/wheel"
 
@@ -144,7 +144,7 @@ jobs:
       # ---------------------------------
 
       - name: Verify Windows Wheel Metadata
-        shell: pwsh
+        shell: powershell
         run: |
           & "${{ github.workspace }}/qcom/scripts/release_testing/verify_windows_wheel_metadata.ps1" `
             -WheelDirectory "${{ github.workspace }}/release_testing/wheel" `
@@ -177,17 +177,15 @@ jobs:
           name: release-test-wheels-${{ github.run_id }}
           path: "${{ github.workspace }}/release_testing/wheel"
 
-      - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      # Python interpreters are pre-installed on the Windows runners; we select
+      # the matrix Python version via `py -<X.Y>` inside the script below.
 
       # ---------------------------------
       # Step 4 (Windows): Test Wheel
       # ---------------------------------
 
       - name: Test Wheel
-        shell: pwsh
+        shell: powershell
         run: |
           & "${{ github.workspace }}/qcom/scripts/release_testing/install_and_test_wheel.ps1" `
             -PythonVersion   "${{ matrix.python-version }}" `
@@ -247,10 +245,7 @@ jobs:
           name: release-test-wheels-${{ github.run_id }}
           path: "${{ github.workspace }}/release_testing/wheel"
 
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      # Python 3.12 (ARM64) is pre-installed on this runner; selected via `py -3.12` in the script.
 
       # ---------------------------------
       # Step 5: Verify Backward Compatibility
@@ -260,7 +255,7 @@ jobs:
       # ---------------------------------
 
       - name: Backward Compatibility Test
-        shell: pwsh
+        shell: powershell
         run: |
           & "${{ github.workspace }}/qcom/scripts/release_testing/verify_backward_compatibility.ps1" `
             -PythonVersion       "3.12" `

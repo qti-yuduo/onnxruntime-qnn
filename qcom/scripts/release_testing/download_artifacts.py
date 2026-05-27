@@ -10,11 +10,10 @@ Used by the release-testing workflow to pull artifacts from artifactory
 import argparse
 import os
 import sys
-import urllib3
 from pathlib import Path
-from typing import Optional
 
 import requests
+import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -23,26 +22,23 @@ JFROG_API_KEY = os.environ.get("JFROG_API_KEY")
 
 # (artifact_type, index_server) -> Artifactory repo name
 REPOSITORIES = {
-    ("wheel", "test-users"):   "aisw-pypi-test-users",
+    ("wheel", "test-users"): "aisw-pypi-test-users",
     ("wheel", "test-project"): "aisw-pypi-test-project-local",
-    ("wheel", "project"):      "aisw-pypi-project",
-    ("wheel", "public"):       "aisw-pypi-public",
-
-    ("zip", "test-users"):      "aisw-zip-test-users",
-    ("zip", "test-project"):    "aisw-zip-test-project",
-    ("zip", "project"):         "aisw-zip-project",
-    ("zip", "public"):          "aisw-zip-public",
-
+    ("wheel", "project"): "aisw-pypi-project",
+    ("wheel", "public"): "aisw-pypi-public",
+    ("zip", "test-users"): "aisw-zip-test-users",
+    ("zip", "test-project"): "aisw-zip-test-project",
+    ("zip", "project"): "aisw-zip-project",
+    ("zip", "public"): "aisw-zip-public",
     # tgz artifacts share the same Artifactory repos as zip
-    ("tgz", "test-users"):      "aisw-zip-test-users",
-    ("tgz", "test-project"):    "aisw-zip-test-project",
-    ("tgz", "project"):         "aisw-zip-project",
-    ("tgz", "public"):          "aisw-zip-public",
-
-    ("nuget", "test-users"):    "aisw-nuget-test-users",
-    ("nuget", "test-project"):  "aisw-nuget-test-project",
-    ("nuget", "project"):       "aisw-nuget-project",
-    ("nuget", "public"):        "aisw-nuget-public",
+    ("tgz", "test-users"): "aisw-zip-test-users",
+    ("tgz", "test-project"): "aisw-zip-test-project",
+    ("tgz", "project"): "aisw-zip-project",
+    ("tgz", "public"): "aisw-zip-public",
+    ("nuget", "test-users"): "aisw-nuget-test-users",
+    ("nuget", "test-project"): "aisw-nuget-test-project",
+    ("nuget", "project"): "aisw-nuget-project",
+    ("nuget", "public"): "aisw-nuget-public",
 }
 
 ARTIFACT_TYPES = sorted({k[0] for k in REPOSITORIES})
@@ -58,7 +54,7 @@ def _check_env() -> None:
         sys.exit(1)
 
 
-def list_artifacts(repo: str, path: str, verify_ssl: bool = False) -> Optional[list]:
+def list_artifacts(repo: str, path: str, verify_ssl: bool = False) -> list | None:
     """List file artifacts under <repo><path> via the storage API."""
     url = f"{ARTIFACTORY_BASE_URL}/api/storage/{repo}{path}"
     try:
@@ -70,22 +66,16 @@ def list_artifacts(repo: str, path: str, verify_ssl: bool = False) -> Optional[l
         )
         response.raise_for_status()
         results = response.json()
-        return [
-            item["uri"].lstrip("/")
-            for item in results.get("children", [])
-            if not item.get("folder", False)
-        ]
+        return [item["uri"].lstrip("/") for item in results.get("children", []) if not item.get("folder", False)]
     except requests.exceptions.RequestException as e:
         print(f"Failed to list artifacts at {url}: {e}", file=sys.stderr)
         if hasattr(e, "response") and e.response is not None:
             print(f"  status={e.response.status_code}", file=sys.stderr)
-            print(f"  body={e.response.text}",          file=sys.stderr)
+            print(f"  body={e.response.text}", file=sys.stderr)
         return None
 
 
-def download_artifact(
-    repo: str, artifact_path: str, output_dir: str, verify_ssl: bool = False
-) -> bool:
+def download_artifact(repo: str, artifact_path: str, output_dir: str, verify_ssl: bool = False) -> bool:
     """Download a single artifact to output_dir."""
     url = f"{ARTIFACTORY_BASE_URL}/{repo}/{artifact_path}"
     output_path = Path(output_dir) / Path(artifact_path).name

@@ -15,7 +15,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $true
 
 $pyNoDot = $PythonVersion.Replace(".", "")
 $envName = "py${pyNoDot}_release_backward_compatibility_env"
@@ -31,8 +30,9 @@ if (-not $wheel) {
 }
 Write-Host "Found wheel: $($wheel.FullName)" -ForegroundColor Cyan
 
-# Create venv
-python -m venv $envName
+# Create venv using the py launcher to pick the requested Python version
+# (no actions/setup-python needed — runner has Python pre-installed)
+py -$PythonVersion -m venv $envName
 
 # Activate venv (dot-source so the PATH update persists in this script's scope)
 . "$envName/Scripts/Activate.ps1"
