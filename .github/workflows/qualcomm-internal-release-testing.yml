@@ -26,12 +26,14 @@ on:
           For nuget package, the format should be <version>.<version>.<version>-<suffix>.
             Please note that underscore (_) is not allowed in the version format.
         type: string
+        # default: "0.1.0.test0"
         default: "2.2.0"
       index_server_from:
         description: |
           From which server the artifact is located. Choose one of
           ["test-users", "test-project", "project", "public"].
         type: string
+        # default: "test-users"
         default: "project"
   workflow_dispatch:
     inputs: *common_inputs
@@ -40,7 +42,7 @@ jobs:
   download-wheel-from-artifactory:
     name: "Download and Verify Wheels from Artifactory"
     runs-on: [Linux, self-hosted, Build]
-    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     steps:
       - uses: actions/checkout@v6
@@ -130,7 +132,7 @@ jobs:
     name: "Verify Windows Wheel Metadata"
     runs-on: [Windows, self-hosted, Build]
     needs: [download-wheel-from-artifactory]
-    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     steps:
       - uses: actions/checkout@v6
@@ -156,7 +158,7 @@ jobs:
     name: "Test Wheel - ${{ matrix.platform.name }} - Py${{ matrix.python-version }}"
     needs: [download-wheel-from-artifactory]
     runs-on: ${{ matrix.platform.os }}
-    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     strategy:
       fail-fast: false
@@ -204,7 +206,7 @@ jobs:
     runs-on: [Linux, self-hosted, ARM64]
     container:
       image: quay.io/pypa/manylinux_2_34_aarch64
-    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     strategy:
       fail-fast: false
@@ -238,7 +240,7 @@ jobs:
     name: "Verify Backward Compatibility (Windows ARM64, Py3.12)"
     runs-on: [Windows, self-hosted, ARM64]
     needs: [download-wheel-from-artifactory]
-    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     steps:
       - uses: actions/checkout@v6
