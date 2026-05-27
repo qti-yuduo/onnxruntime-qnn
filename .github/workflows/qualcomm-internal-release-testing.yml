@@ -34,7 +34,7 @@ on:
           ["test-users", "test-project", "project", "public"].
         type: string
         # default: "test-users"
-        default: "project"
+        default: "public"
   workflow_dispatch:
     inputs: *common_inputs
 
@@ -44,7 +44,7 @@ on:
 env:
   ARTIFACT_FORMAT:   ${{ inputs.artifact_format   || 'wheel' }}
   VERSION_FROM:      ${{ inputs.version_from      || '2.2.0' }}
-  INDEX_SERVER_FROM: ${{ inputs.index_server_from || 'project' }}
+  INDEX_SERVER_FROM: ${{ inputs.index_server_from || 'public' }}
 
 jobs:
   download-wheel-from-artifactory:
