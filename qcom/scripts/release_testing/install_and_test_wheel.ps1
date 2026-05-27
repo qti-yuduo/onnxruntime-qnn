@@ -32,7 +32,8 @@ Write-Host "Found wheel: $($wheel.FullName)" -ForegroundColor Cyan
 
 # Create venv named py{XYZ}_release_testing_env using the py launcher
 # to pick the requested Python version (no actions/setup-python needed).
-py -$PythonVersion -m venv $envName
+$pyTag = if ($WheelArch -eq "win_arm64") { "$PythonVersion-arm64" } else { "$PythonVersion" }
+py -$pyTag -m venv $envName
 
 # Activate venv (dot-source so the PATH update persists in this script's scope)
 . "$envName/Scripts/Activate.ps1"
