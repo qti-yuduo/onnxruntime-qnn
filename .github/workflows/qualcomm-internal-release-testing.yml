@@ -198,8 +198,6 @@ jobs:
     name: "Test Wheel - Linux aarch64 - Py${{ matrix.python-version }}"
     needs: [download-wheel-from-artifactory]
     runs-on: [Linux, self-hosted, ARM64]
-    container:
-      image: quay.io/pypa/manylinux_2_34_aarch64
     # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     strategy:

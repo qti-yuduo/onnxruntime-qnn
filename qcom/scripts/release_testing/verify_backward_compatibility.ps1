@@ -16,6 +16,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Force UTF-8 for native-process I/O so ONNX Runtime's wide-char log output
+# isn't misrendered with spaces between every character.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding           = [System.Text.Encoding]::UTF8
+
+# Suppress ANSI color escape codes ([0;93m...[m) in ORT's log output —
+# they render as literal text in the GitHub Actions log viewer.
+$env:NO_COLOR = "1"
+
 $pyNoDot = $PythonVersion.Replace(".", "")
 $envName = "py${pyNoDot}_release_backward_compatibility_env"
 

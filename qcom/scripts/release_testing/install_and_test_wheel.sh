@@ -24,12 +24,24 @@ done
 py_no_dot=$(echo "$python_version" | tr -d '.')
 env_name="py${py_no_dot}_release_testing_env"
 
-# The manylinux container ships every supported CPython under /opt/python/
-python_bin="/opt/python/cp${py_no_dot}-cp${py_no_dot}/bin/python"
-if [ ! -x "$python_bin" ]; then
-  echo "ERROR: Python interpreter not found at $python_bin"
+# Locate the requested Python interpreter on the host.
+# Try the version-suffixed binary first (python3.12), then the manylinux
+# container layout (/opt/python/cp{ver}-cp{ver}/bin/python) as a fallback
+# so this script works both natively and inside a manylinux container.
+python_bin=""
+if command -v "python${python_version}" >/dev/null 2>&1; then
+  python_bin=$(command -v "python${python_version}")
+elif [ -x "/opt/python/cp${py_no_dot}-cp${py_no_dot}/bin/python" ]; then
+  python_bin="/opt/python/cp${py_no_dot}-cp${py_no_dot}/bin/python"
+fi
+
+if [ -z "$python_bin" ] || [ ! -x "$python_bin" ]; then
+  echo "ERROR: Python ${python_version} interpreter not found."
+  echo "  Tried: python${python_version} on PATH"
+  echo "         /opt/python/cp${py_no_dot}-cp${py_no_dot}/bin/python"
   exit 1
 fi
+echo "Using Python: $python_bin"
 
 # Find the wheel that matches both the Python version and the platform
 wheel=$(find "$wheel_directory" -maxdepth 1 \
