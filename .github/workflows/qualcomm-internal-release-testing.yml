@@ -164,7 +164,7 @@ jobs:
             os: [Windows, self-hosted, ARM64]
             wheel_arch: win_arm64
           - name: "Windows x86_64"
-            os: [Windows, self-hosted, x86_64]
+            os: [Windows, self-hosted, X64]
             wheel_arch: win_amd64
         python-version: ['3.11', '3.12', '3.13', '3.14']
 
