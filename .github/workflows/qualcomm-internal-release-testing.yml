@@ -163,7 +163,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download Wheels
+      - name: Download Wheel
         uses: actions/download-artifact@v4
         with:
           name: release-test-wheels-${{ github.run_id }}
@@ -197,7 +197,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download Wheels
+      - name: Download Wheel
         uses: actions/download-artifact@v4
         with:
           name: release-test-wheels-${{ github.run_id }}
@@ -226,7 +226,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download Wheels
+      - name: Download Wheel
         uses: actions/download-artifact@v4
         with:
           name: release-test-wheels-${{ github.run_id }}
