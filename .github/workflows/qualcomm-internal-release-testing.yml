@@ -9,9 +9,6 @@ permissions:
   id-token: write
 
 on:
-  push:
-    branches:
-      - dev/qti-mbadnara/release-testing-workflow
   workflow_call:
     inputs: &common_inputs
       artifact_format:
@@ -26,21 +23,16 @@ on:
           For nuget package, the format should be <version>.<version>.<version>-<suffix>.
             Please note that underscore (_) is not allowed in the version format.
         type: string
-        # default: "0.1.0.test0"
-        default: "2.2.0"
+        default: "0.1.0.test0"
       index_server_from:
         description: |
           From which server the artifact is located. Choose one of
           ["test-users", "test-project", "project", "public"].
         type: string
-        # default: "test-users"
-        default: "public"
+        default: "test-users"
   workflow_dispatch:
     inputs: *common_inputs
 
-# Resolve inputs once at the workflow level. Push triggers don't supply inputs
-# (and YAML `default:` values are not applied to push events), so each entry
-# falls back to a sensible default when the dispatch/call value is empty.
 env:
   ARTIFACT_FORMAT:   ${{ inputs.artifact_format   || 'wheel' }}
   VERSION_FROM:      ${{ inputs.version_from      || '2.2.0' }}
@@ -50,7 +42,7 @@ jobs:
   download-wheel-from-artifactory:
     name: "Download and Verify Wheels from Artifactory"
     runs-on: [Linux, self-hosted, Build]
-    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     steps:
       - uses: actions/checkout@v6
@@ -128,7 +120,7 @@ jobs:
     name: "Verify Windows Wheel Metadata"
     runs-on: [Windows, self-hosted, Build]
     needs: [download-wheel-from-artifactory]
-    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     steps:
       - uses: actions/checkout@v6
@@ -154,7 +146,7 @@ jobs:
     name: "Test Wheel - ${{ matrix.platform.name }} - Py${{ matrix.python-version }}"
     needs: [download-wheel-from-artifactory]
     runs-on: ${{ matrix.platform.os }}
-    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     strategy:
       fail-fast: false
@@ -177,9 +169,6 @@ jobs:
           name: release-test-wheels-${{ github.run_id }}
           path: "${{ github.workspace }}/release_testing/wheel"
 
-      # Python interpreters are pre-installed on the Windows runners; we select
-      # the matrix Python version via `py -<X.Y>` inside the script below.
-
       # ---------------------------------
       # Step 4 (Windows): Test Wheel
       # ---------------------------------
@@ -195,10 +184,10 @@ jobs:
             -SamplePath      "${{ github.workspace }}/qcom/samples/test_wheel.py"
 
   test-wheel-on-linux:
-    name: "Test Wheel - Linux aarch64 - Py${{ matrix.python-version }}"
+    name: "Test Wheel - Linux ARM64 - Py${{ matrix.python-version }}"
     needs: [download-wheel-from-artifactory]
     runs-on: [Linux, self-hosted, ARM64]
-    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     strategy:
       fail-fast: false
@@ -232,7 +221,7 @@ jobs:
     name: "Verify Backward Compatibility (Windows ARM64, Py3.12)"
     runs-on: [Windows, self-hosted, ARM64]
     needs: [download-wheel-from-artifactory]
-    # if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
+    if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     steps:
       - uses: actions/checkout@v6
@@ -242,8 +231,6 @@ jobs:
         with:
           name: release-test-wheels-${{ github.run_id }}
           path: "${{ github.workspace }}/release_testing/wheel"
-
-      # Python 3.12 (ARM64) is pre-installed on this runner; selected via `py -3.12` in the script.
 
       # ---------------------------------
       # Step 5: Verify Backward Compatibility
