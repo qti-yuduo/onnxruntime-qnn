@@ -44,6 +44,10 @@ REPOSITORIES = {
 ARTIFACT_TYPES = sorted({k[0] for k in REPOSITORIES})
 INDEX_SERVERS = sorted({k[1] for k in REPOSITORIES})
 
+# The test-binaries package always lives in this repo, independent of index_server.
+TEST_PACKAGES_REPO = "aisw-zip-test-project"
+TEST_PACKAGES_FILENAME = "test_packages.zip"
+
 
 def _check_env() -> None:
     if not ARTIFACTORY_BASE_URL:
@@ -118,15 +122,23 @@ def main() -> int:
     )
     parser.add_argument(
         "--artifact_to_be_downloaded",
-        required=True,
         choices=ARTIFACT_TYPES,
-        help="Artifact type",
+        help="Artifact type (not required with --download-test-packages, required otherwise)",
     )
     parser.add_argument(
         "--index_server",
-        required=True,
         choices=INDEX_SERVERS,
-        help="Which server hosts the artifact",
+        help="Which server hosts the artifact (not required with --download-test-packages, required otherwise)",
+    )
+    parser.add_argument(
+        "--download-test-packages",
+        dest="download_test_packages",
+        action="store_true",
+        help=(
+            f"Download {TEST_PACKAGES_FILENAME} from "
+            f"{TEST_PACKAGES_REPO}/onnxruntime-qnn/<artifact_folder_name>/ "
+            "instead of a regular artifact folder."
+        ),
     )
     parser.add_argument(
         "--output_directory",
@@ -137,6 +149,29 @@ def main() -> int:
 
     _check_env()
 
+    output_dir = Path(args.output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {output_dir}")
+
+    # --- Test-packages mode: fetch a single known file from a fixed repo ---
+    if args.download_test_packages:
+        artifact_path = f"onnxruntime-qnn/{args.artifact_folder_name}/{TEST_PACKAGES_FILENAME}"
+        print(f"Downloading {TEST_PACKAGES_REPO}/{artifact_path} ...")
+        ok = download_artifact(
+            repo=TEST_PACKAGES_REPO,
+            artifact_path=artifact_path,
+            output_dir=str(output_dir),
+        )
+        return 0 if ok else 1
+
+    # --- Regular mode: list and download a whole artifact folder ---
+    if not args.artifact_to_be_downloaded or not args.index_server:
+        print(
+            "ERROR: --artifact_to_be_downloaded and --index_server are required unless --download-test-packages is set",
+            file=sys.stderr,
+        )
+        return 1
+
     key = (args.artifact_to_be_downloaded, args.index_server)
     if key not in REPOSITORIES:
         print(
@@ -145,10 +180,6 @@ def main() -> int:
         )
         return 1
     repo = REPOSITORIES[key]
-
-    output_dir = Path(args.output_directory)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir}")
 
     base_path = f"onnxruntime-qnn/{args.artifact_folder_name}"
 
