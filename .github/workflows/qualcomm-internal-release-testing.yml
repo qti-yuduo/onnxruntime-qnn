@@ -79,31 +79,35 @@ jobs:
           wheel_dir="${{ github.workspace }}/release_testing/wheel"
           win_arm64=$(find "$wheel_dir" -maxdepth 1 -name "*win_arm64.whl"              | wc -l)
           win_amd64=$(find "$wheel_dir" -maxdepth 1 -name "*win_amd64.whl"              | wc -l)
-          manylinux=$(find "$wheel_dir" -maxdepth 1 -name "*manylinux_2_34_aarch64.whl" | wc -l)
+          manylinux_aarch64=$(find "$wheel_dir" -maxdepth 1 -name "*manylinux_2_34_aarch64.whl" | wc -l)
+          manylinux_x86_64=$(find "$wheel_dir" -maxdepth 1 -name "*manylinux_2_35_x86_64.whl"   | wc -l)
           total=$(find "$wheel_dir" -maxdepth 1 -name "*.whl"                           | wc -l)
-          other=$(( total - win_arm64 - win_amd64 - manylinux ))
+          other=$(( total - win_arm64 - win_amd64 - manylinux_aarch64 - manylinux_x86_64 ))
 
           echo "win_arm64:                  $win_arm64"
           echo "win_amd64:                  $win_amd64"
-          echo "manylinux_2_34_aarch64:     $manylinux"
+          echo "manylinux_2_34_aarch64:     $manylinux_aarch64"
+          echo "manylinux_2_35_x86_64:      $manylinux_x86_64"
           echo "other:                      $other"
           echo "total:                      $total"
 
           errors=0
           [ "$win_arm64" -eq 4 ] || { echo "ERROR: Expected 4 win_arm64 wheels, found $win_arm64";           errors=1; }
           [ "$win_amd64" -eq 4 ] || { echo "ERROR: Expected 4 win_amd64 wheels, found $win_amd64";           errors=1; }
-          [ "$manylinux" -eq 4 ] || { echo "ERROR: Expected 4 manylinux_2_34_aarch64 wheels, found $manylinux"; errors=1; }
+          [ "$manylinux_aarch64" -eq 4 ] || { echo "ERROR: Expected 4 manylinux_2_34_aarch64 wheels, found $manylinux_aarch64"; errors=1; }
+          [ "$manylinux_x86_64" -eq 4 ] || { echo "ERROR: Expected 4 manylinux_2_35_x86_64 wheels, found $manylinux_x86_64"; errors=1; }
           if [ "$other" -gt 0 ]; then
             echo "ERROR: Found $other unexpected wheel(s):"
             find "$wheel_dir" -maxdepth 1 -name "*.whl" \
               ! -name "*win_arm64.whl" \
               ! -name "*win_amd64.whl" \
-              ! -name "*manylinux_2_34_aarch64.whl"
+              ! -name "*manylinux_2_34_aarch64.whl" \
+              ! -name "*manylinux_2_35_x86_64.whl"
             errors=1
           fi
 
           [ "$errors" -eq 0 ] || exit 1
-          echo "Wheel count validation passed: 4 win_arm64, 4 win_amd64, 4 manylinux_2_34_aarch64"
+          echo "Wheel count validation passed: 4 win_arm64, 4 win_amd64, 4 manylinux_2_34_aarch64, 4 manylinux_2_35_x86_64"
 
       # ---------------------------------
       # Hand off wheels to Windows job
@@ -184,17 +188,38 @@ jobs:
             -SamplePath      "${{ github.workspace }}/qcom/samples/test_wheel.py"
 
   test-wheel-on-linux:
-    name: "Test Wheel - Linux ARM64 - Py${{ matrix.python-version }}"
+    name: "Test Wheel - ${{ matrix.platform.name }} - Py${{ matrix.python-version }}"
     needs: [download-wheel-from-artifactory]
-    runs-on: [Linux, self-hosted, ARM64]
+    runs-on: ${{ matrix.platform.os }}
     if: inputs.artifact_format == 'wheel' || inputs.artifact_format == 'all'
 
     strategy:
       fail-fast: false
       matrix:
+        platform:
+          - name: "Linux ARM64"
+            os: [Linux, self-hosted, ARM64]
+            wheel_arch: manylinux_2_34_aarch64
+            use_container: false
+          - name: "Linux x86_64"
+            os: [Linux, self-hosted, X64]
+            wheel_arch: manylinux_2_35_x86_64
+            use_container: true
         python-version: ['3.11', '3.12', '3.13', '3.14']
 
     steps:
+      # For x86_64, build the Docker image first
+      - name: Build Docker Image (x86_64 only)
+        if: matrix.platform.use_container
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --build-arg BUILD_USER=builder \
+            --build-arg BUILD_UID=1000 \
+            --build-arg BUILD_GID=1000 \
+            -t onnxruntime-qnn-ubuntu-22.04:latest \
+            qcom/scripts/linux/ubuntu_22_04/
+
       - uses: actions/checkout@v6
 
       - name: Download Wheel
@@ -207,15 +232,34 @@ jobs:
       # Step 4 (Linux): Test Wheel
       # ---------------------------------
 
-      - name: Test Wheel
+      - name: Test Wheel (Native - ARM64)
+        if: ${{ !matrix.platform.use_container }}
         shell: bash
         run: |
           bash "${GITHUB_WORKSPACE}/qcom/scripts/release_testing/install_and_test_wheel.sh" \
             --python-version    "${{ matrix.python-version }}" \
-            --wheel-arch        "manylinux_2_34_aarch64" \
+            --wheel-arch        "${{ matrix.platform.wheel_arch }}" \
             --wheel-directory   "${GITHUB_WORKSPACE}/release_testing/wheel" \
             --expected-version  "${VERSION_FROM}" \
             --sample-path       "${GITHUB_WORKSPACE}/qcom/samples/test_wheel.py"
+
+      - name: Test Wheel (Container - x86_64)
+        if: matrix.platform.use_container
+        shell: bash
+        run: |
+          docker run --rm \
+            --platform linux/amd64 \
+            --user root \
+            -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+            -w "${GITHUB_WORKSPACE}" \
+            -e VERSION_FROM="${VERSION_FROM}" \
+            onnxruntime-qnn-ubuntu-22.04:latest \
+            bash qcom/scripts/release_testing/install_and_test_wheel.sh \
+              --python-version    "${{ matrix.python-version }}" \
+              --wheel-arch        "${{ matrix.platform.wheel_arch }}" \
+              --wheel-directory   "${GITHUB_WORKSPACE}/release_testing/wheel" \
+              --expected-version  "${VERSION_FROM}" \
+              --sample-path       "${GITHUB_WORKSPACE}/qcom/samples/test_wheel.py"
 
   verify-backward-compatibility:
     name: "Verify Backward Compatibility (Windows ARM64, Py3.12)"
