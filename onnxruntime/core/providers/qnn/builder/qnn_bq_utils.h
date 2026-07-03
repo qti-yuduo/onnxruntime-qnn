@@ -92,6 +92,14 @@ Ort::Status AddFp16ToInt16QuantizeOutput(QnnModelWrapper& qnn_model_wrapper,
                                          std::vector<uint32_t> output_shape,
                                          bool do_op_validation);
 
+// Determine whether given BQ parameters are natively supported by HTP. If true, activation data type can be kept in
+// fixed point; otherwise, insert Dequantize and Quantize nodes around to make activation in FP16.
+bool IsHTPSupportedNativeBQ(Qnn_DataType_t act_data_type,
+                            uint32_t bitwidth,
+                            uint32_t block_size,
+                            uint32_t output_channel,
+                            gsl::span<const float> offsets);
+
 }  // namespace bq
 }  // namespace qnn
 }  // namespace onnxruntime
