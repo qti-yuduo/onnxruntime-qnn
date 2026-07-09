@@ -14,6 +14,7 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
   CreateArgMaxMinOpBuilder("ArgMax", *this);
   CreateArgMaxMinOpBuilder("ArgMin", *this);
   CreateBatchNormalizationOpBuilder("BatchNormalization", *this);
+  CreateBufferOpBuilder("Buffer", *this);
   CreateCastOpBuilder("Cast", *this);
   CreateClipOpBuilder("Clip", *this);
   CreateConcatOpBuilder("Concat", *this);
@@ -129,6 +130,8 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
   CreateSoftmaxOpBuilder("LogSoftmax", *this);
   CreateSoftmaxOpBuilder("Softmax", *this);
   CreateSplitOpBuilder("Split", *this);
+  CreateStatefulGruOpBuilder("StatefulGru", *this);
+  CreateStatefulLstmOpBuilder("StatefulLstm", *this);
   CreateSTFTOpBuilder("STFT", *this);
   CreateTanOpBuilder("Tan", *this);
   CreateThresholdedReluOpBuilder("ThresholdedRelu", *this);

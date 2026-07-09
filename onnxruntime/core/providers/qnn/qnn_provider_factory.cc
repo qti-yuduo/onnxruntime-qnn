@@ -19,6 +19,7 @@
 #include "core/providers/qnn/ort_api.h"
 #include "core/providers/qnn/ort_api_version_parser.h"
 #include "core/providers/qnn/qnn_allocator.h"
+#include "core/providers/qnn/common/qnn_graph_utils.h"
 #include "core/providers/qnn/soc_utils.h"
 
 // We allow `backend_type` (e.g., `htp`) or `backend_path` in relative path (e.g., `QnnHtp.dll`) for configurations,
@@ -85,6 +86,17 @@ QnnEpFactory::QnnEpFactory(const char* ep_name,
   IsStreamAware = IsStreamAwareImpl;
   ValidateCompiledModelCompatibilityInfo = ValidateCompiledModelCompatibilityInfoImpl;
   GetHardwareDeviceIncompatibilityDetails = GetHardwareDeviceIncompatibilityDetailsImpl;
+  GetNumCustomOpDomains = GetNumCustomOpDomainsImpl;
+  GetCustomOpDomains = GetCustomOpDomainsImpl;
+
+  // Register schema-only placeholder ops for the qti_aisw block ops so models that use them pass
+  // ORT model validation (Graph::Resolve) when this EP is appended. QNN fuses/compiles the nodes;
+  // the placeholder kernels are never executed for QNN-assigned nodes.
+  qti_aisw_domain_ = Ort::CustomOpDomain{kQtiAiswDomain};
+  for (const char* op_name : kQtiAiswBlockOpNames) {
+    qti_aisw_ops_.push_back(std::make_unique<QtiAiswPlaceholderOp>(op_name));
+    qti_aisw_domain_.Add(qti_aisw_ops_.back().get());
+  }
 
   // HOST_ACCESSIBLE memory for HTP and GPU backends.
   OrtMemoryInfo* mem_info = nullptr;
@@ -497,6 +509,26 @@ OrtStatus* ORT_API_CALL QnnEpFactory::GetHardwareDeviceIncompatibilityDetailsImp
         reasons,
         QNN_COMMON_ERROR_UNDEFINED,
         "Unknown exception occurred while creating QNN EP for compatibility check");
+  }
+  return nullptr;
+}
+
+OrtStatus* ORT_API_CALL QnnEpFactory::GetNumCustomOpDomainsImpl(_In_ OrtEpFactory* this_ptr,
+                                                                _Out_ size_t* num_domains) noexcept {
+  auto* factory = static_cast<QnnEpFactory*>(this_ptr);
+  // A single domain (qti_aisw) holds all placeholder ops.
+  *num_domains = factory->qti_aisw_ops_.empty() ? 0u : 1u;
+  return nullptr;
+}
+
+OrtStatus* ORT_API_CALL QnnEpFactory::GetCustomOpDomainsImpl(
+    _In_ OrtEpFactory* this_ptr,
+    _Out_writes_all_(num_domains) OrtCustomOpDomain** domains,
+    _In_ size_t num_domains) noexcept {
+  auto* factory = static_cast<QnnEpFactory*>(this_ptr);
+  if (num_domains >= 1 && !factory->qti_aisw_ops_.empty()) {
+    // Hand ORT a non-owning pointer; the factory retains ownership for the domain's lifetime.
+    domains[0] = factory->qti_aisw_domain_;
   }
   return nullptr;
 }
