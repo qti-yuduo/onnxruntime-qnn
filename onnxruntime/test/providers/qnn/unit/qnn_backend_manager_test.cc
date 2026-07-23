@@ -129,7 +129,9 @@ TEST(QnnUnit_BackendManagerTest, SetupBackend_InvalidPath_ReturnsError) {
   ASSERT_NE(manager, nullptr);
 
   std::unordered_map<std::string, std::unique_ptr<std::vector<std::string>>> dummy_map;
-  auto status = manager->SetupBackend(false, false, false, -1, false, nullptr, dummy_map);
+  qnn::EpContextIoDispatch dummy_io_dispatch(nullptr);
+  auto status = manager->SetupBackend(false, false, false, -1, false, nullptr, dummy_map,
+                                      dummy_io_dispatch);
 
   EXPECT_FALSE(status.IsOK());
   EXPECT_NE(std::string(status.GetErrorMessage()).find("Unable to load backend"),
@@ -287,7 +289,9 @@ static std::shared_ptr<qnn::QnnBackendManager> MakeSerializerManager(
 // Calls SetupBackend with standard test parameters (no shared context, no rpcmem).
 static Ort::Status SetupBackendHtp(qnn::QnnBackendManager& manager) {
   std::unordered_map<std::string, std::unique_ptr<std::vector<std::string>>> dummy_map;
-  return manager.SetupBackend(false, false, false, -1, false, nullptr, dummy_map);
+  qnn::EpContextIoDispatch dummy_io_dispatch(nullptr);
+  return manager.SetupBackend(false, false, false, -1, false, nullptr, dummy_map,
+                              dummy_io_dispatch);
 }
 
 // Fixture: probes HTP backend availability once (cached) and skips the whole
@@ -588,14 +592,16 @@ TEST_F(QnnUnit_BackendManagerHtpTest, LoadCachedQnnContextFromBuffer_HTP_Invalid
   ASSERT_NE(manager, nullptr);
 
   std::unordered_map<std::string, std::unique_ptr<std::vector<std::string>>> dummy_map;
-  auto setup_status = manager->SetupBackend(true, true, false, -1, false, nullptr, dummy_map);
+  qnn::EpContextIoDispatch dummy_io_dispatch(nullptr);
+  auto setup_status = manager->SetupBackend(true, true, false, -1, false, nullptr, dummy_map,
+                                            dummy_io_dispatch);
   ASSERT_TRUE(setup_status.IsOK()) << "SetupBackend with QnnSystem failed: " << setup_status.GetErrorMessage();
 
   char garbage[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
                       0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
   std::unordered_map<std::string, std::unique_ptr<qnn::QnnModel>> qnn_models;
   auto status = manager->LoadCachedQnnContextFromBuffer(
-      garbage, sizeof(garbage), "", "test_node", qnn_models, 0);
+      garbage, sizeof(garbage), "", "test_node", qnn_models, 0, dummy_io_dispatch);
   EXPECT_FALSE(status.IsOK());
 }
 

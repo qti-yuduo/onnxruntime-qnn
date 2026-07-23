@@ -30,6 +30,7 @@
 #include "core/providers/qnn/qnn_provider_factory.h"
 #include "core/providers/qnn/shared_context.h"
 #include "core/providers/qnn/qnn_allocator.h"
+#include "core/providers/qnn/builder/ep_context_io_dispatch.h"
 #include "core/providers/qnn/builder/op_tracing/qnn_op_tracing.h"
 #include "core/providers/qnn/builder/qnn_backend_manager.h"
 #include "core/providers/qnn/builder/qnn_ep_input_graph_dumper.h"
@@ -1433,6 +1434,18 @@ QnnEp::QnnEp(QnnEpFactory& factory,
     etwRegistrationManager.RegisterInternalCallback(callback_ETWSink_provider_);
   }
 #endif
+
+  // Owns the EPContext callbacks resolved from session_options. On pre-v28 ORT this is a no-op
+  // stub with HasReadCallback()/HasWriteCallback() returning false.
+  io_dispatch_ = std::make_unique<qnn::EpContextIoDispatch>(&session_options_, &logger_);
+
+  // File mapping and encryption are mutually exclusive: an App-provided read callback replaces
+  // the on-disk read, so file mapping must be off when a read callback is registered.
+  if (enable_file_mapped_weights_ && io_dispatch_->HasReadCallback()) {
+    enable_file_mapped_weights_ = false;
+    ORT_CXX_LOG(logger_, ORT_LOGGING_LEVEL_WARNING,
+                "EPContext read callback registered; disabling file mapping for this session.");
+  }
 }
 
 QnnEp::~QnnEp() {
@@ -2042,6 +2055,7 @@ OrtStatus* ORT_API_CALL QnnEp::GetCapabilityImpl(OrtEp* this_ptr,
                                                 ep->enable_file_mapped_weights_,
                                                 ep->rpcmem_library_,
                                                 context_bin_map,
+                                                *ep->io_dispatch_,
                                                 ep->enable_htp_extended_udma_mode_,
                                                 ep->prepare_only_,
                                                 ep->enable_htp_graph_splitting_);
@@ -2578,7 +2592,8 @@ OrtStatus* QnnEp::CompileContextModel(const OrtGraph** graphs,
                                                   qnn_backend_manager_.get(),
                                                   qnn_models,
                                                   logger_,
-                                                  max_spill_fill_size));
+                                                  max_spill_fill_size,
+                                                  *io_dispatch_));
   }
 
   std::string graph_name;
@@ -2685,7 +2700,8 @@ OrtStatus* QnnEp::CreateEPContextNodes(const OrtGraph* graph,
                                              stop_share_ep_contexts_,
                                              name_,
                                              tensor_name_overrides_,
-                                             enable_multi_soc_ep_context_));
+                                             enable_multi_soc_ep_context_,
+                                             *io_dispatch_));
 
   // Get V2 compatibility info for later query in GetCompiledModelCompatibilityInfo.
   qnn::QnnCompatibilityInfoV2& info_v2 = std::get<qnn::QnnCompatibilityInfoV2>(compatibility_info_.info);
@@ -3180,7 +3196,9 @@ OrtStatus* QnnEp::ValidateCompiledModelCompatibilityInfo(const OrtHardwareDevice
   bool is_backend_setup = qnn_backend_manager_->IsBackendSetup();
   if (!is_backend_setup) {
     std::unordered_map<std::string, std::unique_ptr<std::vector<std::string>>> dummy_map;
-    qnn_backend_manager_->SetupBackend(true, true, false, false, false, nullptr, dummy_map);
+    qnn::EpContextIoDispatch dummy_io_dispatch(nullptr);
+    qnn_backend_manager_->SetupBackend(true, true, false, false, false, nullptr, dummy_map,
+                                       dummy_io_dispatch);
   }
 
   status = qnn_cache_compatibility_manager_->ValidateCompatibilityInfo(info, *model_compatibility);
@@ -3203,7 +3221,9 @@ OrtStatus* QnnEp::GetHardwareDeviceIncompatibilityDetails(const OrtHardwareDevic
                                                           OrtDeviceEpIncompatibilityDetails* details) noexcept {
   // This function is always called by temporary QnnEp, so no need to check if backend is already setup.
   std::unordered_map<std::string, std::unique_ptr<std::vector<std::string>>> dummy_map;
-  Ort::Status status = qnn_backend_manager_->SetupBackend(false, false, false, false, false, nullptr, dummy_map);
+  qnn::EpContextIoDispatch dummy_io_dispatch(nullptr);
+  Ort::Status status = qnn_backend_manager_->SetupBackend(false, false, false, false, false, nullptr, dummy_map,
+                                                          dummy_io_dispatch);
 
   if (!status.IsOK()) {
     const std::string error_message = status.GetErrorMessage();
@@ -3364,7 +3384,7 @@ OrtStatus* QnnEp::QnnNodeComputeInfo::ComputeImpl(OrtNodeComputeInfo* this_ptr,
   }
 
   qnn::QnnModel* model = reinterpret_cast<qnn::QnnModel*>(compute_state);
-  RETURN_IF_NOT_OK(model->ExecuteGraph(kernel_context, ep.logger_));
+  RETURN_IF_NOT_OK(model->ExecuteGraph(kernel_context, ep.logger_, *ep.io_dispatch_));
 
   return nullptr;
 }
