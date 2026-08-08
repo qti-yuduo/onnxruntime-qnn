@@ -41,6 +41,13 @@ Ort::Status RoiAlignOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
                                              const Ort::Logger& logger) const {
   // RoiAlignOp are sensitive with data layout, requires NHWC data layout.
   // Continue RoiAlign if NHWC format.
+
+  // HTP v68 does not support FP32 or FP16 tensors.
+  RETURN_IF(IsHtpV68Arch(qnn_model_wrapper) &&
+                (node_unit.Inputs()[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                 node_unit.Inputs()[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16),
+            "QNN EP: RoiAlign does not support FP32 or FP16 tensors on HTP v68.");
+
   if (node_unit.Domain() == kMSInternalNHWCDomain) {
     return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
   }

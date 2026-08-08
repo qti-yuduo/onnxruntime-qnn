@@ -61,8 +61,13 @@ Ort::Status UpsampleOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
                                              const Ort::Logger& logger) const {
   // Resize ops are sensitive with data layout, no special validation so far
   // The nodes from 1st call of GetCapability do not get layout transformer applied, it's still NCHW
-  // The nodes from 2nd call of GetCapability get layout transformer applied, it's NHWC
-  // Need to do op validation in 1st call of GetCapability
+
+  // HTP v68 does not support FP32 or FP16 tensors.
+  RETURN_IF(IsHtpV68Arch(qnn_model_wrapper) &&
+                (node_unit.Inputs()[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                 node_unit.Inputs()[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16),
+            "QNN EP: Upsample does not support FP32 or FP16 tensors on HTP v68.");
+
   if (node_unit.Domain() == kMSInternalNHWCDomain) {
     return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
   }

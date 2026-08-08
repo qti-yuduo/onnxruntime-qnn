@@ -541,6 +541,12 @@ BatchNormFloatExecution GetBatchNormFloatExecution(const TensorInfo& input_info,
 Ort::Status BatchNormalizationOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
                                                        const OrtNodeUnit& node_unit,
                                                        const Ort::Logger& logger) const {
+  // HTP v68 does not support FP32 or FP16 tensors.
+  RETURN_IF(IsHtpV68Arch(qnn_model_wrapper) &&
+                (node_unit.Inputs()[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                 node_unit.Inputs()[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16),
+            "QNN EP: BatchNormalization does not support FP32 or FP16 tensors on HTP v68.");
+
   if (node_unit.Domain() == kMSInternalNHWCDomain) {
     // It's useless to fallback the node after layout transformation because CPU EP can't support it anyway
     // Still do it here so hopefully QNN Op validation API can tell us some details why it's not supported
