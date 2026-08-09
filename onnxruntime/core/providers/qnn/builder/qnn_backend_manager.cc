@@ -3065,7 +3065,8 @@ Ort::Status QnnBackendManager::GetPlatformInfo() {
       }
 
       const auto* htp_ext = reinterpret_cast<const QnnHtpDevice_DeviceInfoExtension_t*>(hw_info.v1.deviceInfoExtension);
-      if (htp_ext && htp_ext->devType == QNN_HTP_DEVICE_TYPE_ON_CHIP) {
+      if (htp_ext && (htp_ext->devType == QNN_HTP_DEVICE_TYPE_ON_CHIP ||
+                      htp_ext->devType == QNN_HTP_DEVICE_TYPE_OFF_CHIP)) {
         htp_arch_internal_ = htp_ext->onChipDevice.arch;
         vtcm_size_internal_ = static_cast<uint32_t>(htp_ext->onChipDevice.vtcmSize);
         break;
