@@ -50,6 +50,7 @@ Ort::Status LRNOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
   if (node_unit.Domain() == kMSInternalNHWCDomain) {
     return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
   }
+
   const auto& inputs = node_unit.Inputs();
   const auto& outputs = node_unit.Outputs();
 
