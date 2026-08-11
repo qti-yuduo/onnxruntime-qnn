@@ -50,13 +50,11 @@ Ort::Status LRNOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
   if (node_unit.Domain() == kMSInternalNHWCDomain) {
     return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
   }
-  
   const auto& inputs = node_unit.Inputs();
   const auto& outputs = node_unit.Outputs();
 
   RETURN_IF(inputs.size() != 1, "QNN EP: LRN operator must have 1 input.");
   RETURN_IF(outputs.size() != 1, "QNN EP: LRN operator must have 1 output.");
-
 
   const auto& input = inputs[0];
   const auto& output = outputs[0];

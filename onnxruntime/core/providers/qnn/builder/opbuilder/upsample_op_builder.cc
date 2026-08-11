@@ -63,7 +63,6 @@ Ort::Status UpsampleOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
   // The nodes from 1st call of GetCapability do not get layout transformer applied, it's still NCHW
   // The nodes from 2nd call of GetCapability get layout transformer applied, it's NHWC
   // Need to do op validation in 1st call of GetCapability
-
   if (node_unit.Domain() == kMSInternalNHWCDomain) {
     return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
   }

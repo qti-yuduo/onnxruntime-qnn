@@ -41,7 +41,6 @@ Ort::Status RoiAlignOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
                                              const Ort::Logger& logger) const {
   // RoiAlignOp are sensitive with data layout, requires NHWC data layout.
   // Continue RoiAlign if NHWC format.
-
   if (node_unit.Domain() == kMSInternalNHWCDomain) {
     return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
   }
