@@ -128,18 +128,12 @@ class ConvOpBuilder : public BaseOpBuilder {
 Ort::Status ConvOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
                                          const OrtNodeUnit& node_unit,
                                          const Ort::Logger& logger) const {
-  const auto& inputs = node_unit.Inputs();
-  RETURN_IF(inputs.size() < 2, "QNN Conv must have at least 2 inputs.");
-
-  // HTP v68 does not support FP32 or FP16 tensors.
-  RETURN_IF(IsHtpV68Arch(qnn_model_wrapper) &&
-                (inputs[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
-                 inputs[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16),
-            "QNN EP: Conv/ConvTranspose does not support FP32 or FP16 tensors on HTP v68.");
-
   if (node_unit.Domain() == kMSInternalNHWCDomain) {  // Use QNN validation API if layout is NHWC.
     return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
   }
+
+  const auto& inputs = node_unit.Inputs();
+  RETURN_IF(inputs.size() < 2, "QNN Conv must have at least 2 inputs.");
 
   const auto& input_0 = inputs[0];
   std::vector<uint32_t> input_shape;

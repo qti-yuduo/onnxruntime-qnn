@@ -53,13 +53,6 @@ Ort::Status LpPoolOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
   ORT_UNUSED_PARAMETER(logger);
 
   const auto& inputs = node_unit.Inputs();
-
-  // HTP v68 does not support FP32 or FP16 tensors.
-  RETURN_IF(IsHtpV68Arch(qnn_model_wrapper) &&
-                (inputs[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
-                 inputs[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16),
-            "QNN EP: LpPool does not support FP32 or FP16 tensors on HTP v68.");
-
   RETURN_IF_ERROR(DataTypeCheckForCpuBackend(qnn_model_wrapper, inputs[0].type, ""));
 
   // QDQ pattern is not supported in this PR. Reject non-float inputs here so QDQ-wrapped LpPool

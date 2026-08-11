@@ -47,21 +47,16 @@ const OnnxAttrInfo<int64_t> LRNOpBuilder::onnx_size_attr = {"size", 0};
 Ort::Status LRNOpBuilder::IsOpSupported(QnnModelWrapper& qnn_model_wrapper,
                                         const OrtNodeUnit& node_unit,
                                         const Ort::Logger& logger) const {
+  if (node_unit.Domain() == kMSInternalNHWCDomain) {
+    return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
+  }
+  
   const auto& inputs = node_unit.Inputs();
   const auto& outputs = node_unit.Outputs();
 
   RETURN_IF(inputs.size() != 1, "QNN EP: LRN operator must have 1 input.");
   RETURN_IF(outputs.size() != 1, "QNN EP: LRN operator must have 1 output.");
 
-  // HTP v68 does not support FP32 or FP16 tensors.
-  RETURN_IF(IsHtpV68Arch(qnn_model_wrapper) &&
-                (inputs[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
-                 inputs[0].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16),
-            "QNN EP: LRN does not support FP32 or FP16 tensors on HTP v68.");
-
-  if (node_unit.Domain() == kMSInternalNHWCDomain) {
-    return AddToModelBuilder(qnn_model_wrapper, node_unit, logger, true);
-  }
 
   const auto& input = inputs[0];
   const auto& output = outputs[0];
