@@ -650,6 +650,22 @@ TEST_F(QnnUnit_ExecutionProviderTest, Ctor_HtpFP16PrecisionInvalid_LogsVerbose) 
                "Invalid value for ep.qnnexecutionprovider.enable_htp_fp16_precision");
 }
 
+// enable_htp_fp16_clamp_overflow requested but SDK lacks support (QNN API < 2.38) →
+// WARNING "enable_htp_fp16_clamp_overflow was requested but ...". The unit-test
+// coverage build (QAIRT 2.48 = QNN API 2.37) does not define
+// QNN_HTP_FP16_CLAMP_OVERFLOW_AVAILABLE, so the warning branch in the ctor is
+// reachable here.
+TEST_F(QnnUnit_ExecutionProviderTest, Ctor_HtpFp16ClampOverflowTrueOnUnsupportedSdk_LogsWarning) {
+  EpStubContext ctx;
+  ctx.log_severity = ORT_LOGGING_LEVEL_VERBOSE;
+  ctx.session_config[EPKey("enable_htp_fp16_clamp_overflow")] = "1";
+  ctx.session_config[EPKey("soc_model")] = "60";  // avoids FP16+no-soc_model throw
+  auto factory = MakeFactory(ctx);
+  EXPECT_NO_THROW({ auto ep = MakeEp(*factory, ctx); });
+  ExpectLogged(ctx, ORT_LOGGING_LEVEL_WARNING,
+               "enable_htp_fp16_clamp_overflow was requested but the QNN HTP SDK in use does not support it");
+}
+
 TEST_F(QnnUnit_ExecutionProviderTest, Ctor_EnableHtpMonolithicLstmTrue_Succeeds) {
   EpStubContext ctx;
   ctx.session_config[EPKey("enable_htp_monolithic_lstm")] = "1";
