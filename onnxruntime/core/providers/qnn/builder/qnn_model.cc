@@ -381,6 +381,14 @@ Ort::Status QnnModel::ComposeGraph(const QnnModelContext& context) {
 Ort::Status QnnModel::FinalizeGraphs(const Ort::Logger& logger) {
   ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_VERBOSE, "FinalizeGraphs started.");
 
+  {
+    std::ostringstream oss;
+    oss << "graphFinalize: graph=\"" << graph_info_->Name()
+        << "\", context=0x" << std::hex << reinterpret_cast<uintptr_t>(graph_info_->GraphContext())
+        << ", graph_handle=0x" << std::hex << reinterpret_cast<uintptr_t>(graph_info_->Graph());
+    ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_VERBOSE, oss.str().c_str());
+  }
+
   qnn::profile::ProfilingInfo profiling_info;
 #ifdef QNN_SYSTEM_PROFILE_API_ENABLED
   if (qnn_backend_manager_->ProfilingEnabled()) {
@@ -401,9 +409,13 @@ Ort::Status QnnModel::FinalizeGraphs(const Ort::Logger& logger) {
 #endif
 
   if (QNN_GRAPH_NO_ERROR != status) {
-    return MAKE_EP_FAIL(("Failed to finalize QNN graph. " +
-                         utils::FormatQnnError(qnn_backend_manager_->GetQnnInterface(), status))
-                            .c_str());
+    std::ostringstream oss;
+    oss << "Failed to finalize QNN graph: \"" << graph_info_->Name()
+        << "\" (context=0x" << std::hex << reinterpret_cast<uintptr_t>(graph_info_->GraphContext())
+        << ", error_code=0x" << std::hex << status << std::dec << "). "
+        << utils::FormatQnnError(qnn_backend_manager_->GetQnnInterface(), status);
+    ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_ERROR, oss.str().c_str());
+    return MAKE_EP_FAIL(oss.str().c_str());
   }
 
   // NOTE: This function returns immediately when profiling is disabled.
@@ -478,6 +490,15 @@ Ort::Status QnnModel::RecoverFromSSR(const Ort::Logger& logger) {
   Qnn_ContextHandle_t old_context = graph_info_->GraphContext();
   std::string graph_name = graph_info_->Name();
 
+  {
+    std::ostringstream oss;
+    oss << "SSR recovery: graph=\"" << graph_name
+        << "\", old_context=0x" << std::hex << reinterpret_cast<uintptr_t>(old_context)
+        << ", context_bin=\"" << context_bin_filepath_
+        << "\", max_spill_fill_size=" << std::dec << max_spill_fill_size_;
+    ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_WARNING, oss.str().c_str());
+  }
+
   // Clear tensor I/O metadata (will be rebuilt after recovery).
   qnn_input_infos_.clear();
   qnn_output_infos_.clear();
@@ -493,6 +514,10 @@ Ort::Status QnnModel::RecoverFromSSR(const Ort::Logger& logger) {
     if (qnn_backend_manager_->HasContextHandle(old_context)) {
       // We are the first model to recover from this SSR event.
       // Free the old (shared) context and create a new one from the binary.
+      ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_WARNING,
+                  ("SSR recovery: first-to-recover for graph: \"" + graph_name +
+                   "\". Releasing old context and creating new from binary.")
+                      .c_str());
       qnn_backend_manager_->ReleaseSpecificContextHandle(old_context);
 
       // Use the unified file I/O helper instead of duplicating the read logic.
@@ -501,9 +526,20 @@ Ort::Status QnnModel::RecoverFromSSR(const Ort::Logger& logger) {
 
       const auto& qnn_interface = qnn_backend_manager_->GetQnnInterface();
 
-      // Build context configs: priority + spill fill buffer.
+      // Build context configs: priority + spill fill buffer + weight sharing (if originally enabled).
       QnnContext_Config_t priority_config = QNN_CONTEXT_CONFIG_INIT;
       RETURN_IF_ERROR(SetQnnContextConfig(context_priority_, priority_config));
+
+      QnnContext_Config_t weight_sharing_config = QNN_CONTEXT_CONFIG_INIT;
+      QnnHtpContext_CustomConfig_t weight_sharing_custom_config{};
+      if (qnn_backend_manager_->IsHtpWeightSharingEnabled()) {
+        weight_sharing_custom_config.option = QNN_HTP_CONTEXT_CONFIG_OPTION_WEIGHT_SHARING_ENABLED;
+        weight_sharing_custom_config.weightSharingEnabled = true;
+        weight_sharing_config.option = QNN_CONTEXT_CONFIG_OPTION_CUSTOM;
+        weight_sharing_config.customConfig = &weight_sharing_custom_config;
+        ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_WARNING,
+                    ("SSR recovery: restoring weight-sharing context config for graph: \"" + graph_name + "\"").c_str());
+      }
 
 #if QNN_API_VERSION_MAJOR == 2 && (QNN_API_VERSION_MINOR >= 21)
       QnnContext_Config_t spill_fill_config = QNN_CONTEXT_CONFIG_INIT;
@@ -520,23 +556,46 @@ Ort::Status QnnModel::RecoverFromSSR(const Ort::Logger& logger) {
       QnnContext_Config_t* spill_fill_ptr = nullptr;
 #endif
 
-      const QnnContext_Config_t* context_configs[] = {&priority_config, spill_fill_ptr, nullptr};
+      std::vector<const QnnContext_Config_t*> context_configs_vec;
+      context_configs_vec.push_back(&priority_config);
+      if (qnn_backend_manager_->IsHtpWeightSharingEnabled()) {
+        context_configs_vec.push_back(&weight_sharing_config);
+      }
+      if (spill_fill_ptr) {
+        context_configs_vec.push_back(spill_fill_ptr);
+      }
+      context_configs_vec.push_back(nullptr);
 
       auto rt = qnn_interface.contextCreateFromBinary(
           qnn_backend_manager_->GetQnnBackendHandle(),
           qnn_backend_manager_->GetQnnDeviceHandle(),
-          context_configs,
+          context_configs_vec.data(),
           static_cast<void*>(buffer.data()),
           static_cast<Qnn_ContextBinarySize_t>(buffer.size()),
           &new_context,
           qnn_backend_manager_->GetQnnProfileHandle());
-      RETURN_IF(QNN_SUCCESS != rt,
-                ("SSR recovery: contextCreateFromBinary failed. Error code: " + std::to_string(rt)).c_str());
+      if (QNN_SUCCESS != rt) {
+        std::ostringstream oss;
+        oss << "SSR recovery: contextCreateFromBinary failed for graph: \"" << graph_name
+            << "\". Error code: 0x" << std::hex << rt;
+        ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_ERROR, oss.str().c_str());
+        return MAKE_EP_FAIL(oss.str().c_str());
+      }
+      {
+        std::ostringstream oss;
+        oss << "SSR recovery: contextCreateFromBinary succeeded for graph: \"" << graph_name
+            << "\", new_context=0x" << std::hex << reinterpret_cast<uintptr_t>(new_context);
+        ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_WARNING, oss.str().c_str());
+      }
       RETURN_IF_ERROR(qnn_backend_manager_->AddQnnContextHandle(new_context));
     } else {
       // Another model already recovered and recreated the context from this binary.
       // Reuse it — it's the only context remaining in context_map_.
       new_context = qnn_backend_manager_->GetQnnContext(0);
+      std::ostringstream oss;
+      oss << "SSR recovery: reusing already-recovered context for graph: \"" << graph_name
+          << "\", new_context=0x" << std::hex << reinterpret_cast<uintptr_t>(new_context);
+      ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_WARNING, oss.str().c_str());
     }
   }  // release recovery_lock
 
@@ -544,8 +603,20 @@ Ort::Status QnnModel::RecoverFromSSR(const Ort::Logger& logger) {
   const auto& qnn_interface = qnn_backend_manager_->GetQnnInterface();
   Qnn_GraphHandle_t new_graph = nullptr;
   auto rt = qnn_interface.graphRetrieve(new_context, graph_name.c_str(), &new_graph);
-  RETURN_IF(QNN_SUCCESS != rt,
-            ("SSR recovery: graphRetrieve failed for graph: " + graph_name).c_str());
+  if (QNN_SUCCESS != rt) {
+    std::ostringstream oss;
+    oss << "SSR recovery: graphRetrieve failed for graph: \"" << graph_name
+        << "\" (context=0x" << std::hex << reinterpret_cast<uintptr_t>(new_context)
+        << "). Error code: 0x" << std::hex << rt;
+    ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_ERROR, oss.str().c_str());
+    return MAKE_EP_FAIL(oss.str().c_str());
+  }
+  {
+    std::ostringstream oss;
+    oss << "SSR recovery: graphRetrieve succeeded for graph: \"" << graph_name
+        << "\", new_graph=0x" << std::hex << reinterpret_cast<uintptr_t>(new_graph);
+    ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_WARNING, oss.str().c_str());
+  }
 
   // Update graph_info_ with the new handles (tensor metadata is preserved).
   graph_info_->ResetHandles(new_graph, new_context);
@@ -791,9 +862,12 @@ Ort::Status QnnModel::ExecuteGraph(OrtKernelContext* context,
       if (QNN_COMMON_ERROR_SYSTEM_COMMUNICATION == execute_status) {
         return Ort::Status("NPU crashed again after SSR recovery.", QNN_SSR_UNRECOVERABLE_ERROR_CODE);
       }
-      if (QNN_GRAPH_NO_ERROR == execute_status) {
-        ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_WARNING, "SSR recovery succeeded.");
+      if (QNN_GRAPH_NO_ERROR != execute_status) {
+        return MAKE_EP_FAIL(("QNN graph execute error after SSR recovery. " +
+                             utils::FormatQnnError(qnn_backend_manager_->GetQnnInterface(), execute_status))
+                                .c_str());
       }
+      ORT_CXX_LOG(logger, ORT_LOGGING_LEVEL_WARNING, "SSR recovery succeeded.");
     } else {
       // No context binary filepath — either JIT mode or embed_mode=1.
       // SSR recovery requires a context binary on disk to reload from, so skip recovery.

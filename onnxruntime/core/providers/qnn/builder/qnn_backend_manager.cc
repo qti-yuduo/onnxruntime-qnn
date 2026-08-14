@@ -1271,6 +1271,12 @@ Ort::Status QnnBackendManager::ReadContextBinIfValid(const std::string& context_
 Ort::Status QnnBackendManager::CreateContextVtcmBackupBufferSharingEnabled(
     std::unordered_map<std::string, std::unique_ptr<std::vector<std::string>>>& context_bin_map,
     bool enable_htp_graph_splitting) {
+  {
+    std::ostringstream oss;
+    oss << "CreateContextVtcmBackupBufferSharingEnabled: num_context_bins=" << context_bin_map.size()
+        << ", graph_splitting=" << enable_htp_graph_splitting;
+    ORT_CXX_LOG_PTR(logger_ptr_, ORT_LOGGING_LEVEL_VERBOSE, oss.str().c_str());
+  }
 #if QNN_API_VERSION_MAJOR == 2 && (QNN_API_VERSION_MINOR >= 26)
   QnnContext_Config_t context_config_resource_sharing = QNN_CONTEXT_CONFIG_INIT;
   QnnHtpContext_CustomConfig_t resource_sharing_custom_config;
@@ -1500,6 +1506,18 @@ Ort::Status QnnBackendManager::CreateContext(bool enable_htp_weight_sharing,
   if (true == context_created_) {
     ORT_CXX_LOG_PTR(logger_ptr_, ORT_LOGGING_LEVEL_INFO, "Context created already.");
     return Ort::Status();
+  }
+
+  htp_weight_sharing_enabled_ = enable_htp_weight_sharing;
+
+  {
+    std::ostringstream oss;
+    oss << "CreateContext: weight_sharing=" << enable_htp_weight_sharing
+        << ", ref_weight_sharing=" << enable_htp_ref_weight_sharing
+        << ", extended_udma=" << enable_htp_extended_udma_mode
+        << ", prepare_only=" << enable_htp_prepare_only
+        << ", graph_splitting=" << enable_htp_graph_splitting;
+    ORT_CXX_LOG_PTR(logger_ptr_, ORT_LOGGING_LEVEL_VERBOSE, oss.str().c_str());
   }
 
   QnnContext_Config_t context_config_weight_sharing = QNN_CONTEXT_CONFIG_INIT;
@@ -2120,6 +2138,14 @@ Ort::Status QnnBackendManager::SetupBackend(
   }
 
   if (status.IsOK() && (htp_share_resource_optimization_ == 1 || !load_from_cached_context)) {
+    {
+      std::ostringstream oss;
+      oss << "SetupBackend: creating context. htp_share_resource_optimization=" << htp_share_resource_optimization_
+          << ", share_ep_contexts=" << share_ep_contexts
+          << ", load_from_cached_context=" << load_from_cached_context
+          << ", enable_htp_weight_sharing=" << enable_htp_weight_sharing;
+      ORT_CXX_LOG_PTR(logger_ptr_, ORT_LOGGING_LEVEL_VERBOSE, oss.str().c_str());
+    }
     status = htp_share_resource_optimization_ == 1
                  ? CreateContextVtcmBackupBufferSharingEnabled(context_bin_map,
                                                                enable_htp_graph_splitting)
